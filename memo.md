@@ -14,6 +14,7 @@ AI エージェント自身に工程管理を任せるのではなく、Controll
 - PC 変更、CLI 異常終了、AI 利用制限などが発生しても Git の checkpoint から再開できるようにする
 - 上流成果物の変更による手戻りを State Machine で明示的に管理する
 - QandA.md を介して AI 間の質問・回答・人間への問い合わせを管理する
+- 人間が ChatGPT と相談し、その内容を CLI AI へ手作業で転記する作業を可能な限り廃止する
 
 ## 2. 使用技術
 
@@ -46,22 +47,6 @@ SQLite は実行状態、イベント履歴、Worker 状態、retry 情報、che
 
 両方とも利用不能の場合は AntiGravity、Grok を fallback Worker として選択可能にする。
 
-例：
-
-```text
-Claude + Codex
-      ↓ unavailable
-Claude only / Codex only
-      ↓ unavailable
-AntiGravity
-      ↓ unavailable
-Grok
-      ↓ unavailable
-WAIT_RESOURCE / HUMAN_REQUIRED
-```
-
-Worker の優先順位・対応 Role は設定ファイルから変更可能にする。
-
 ## 4. 基本思想
 
 ### 4.1 AI は Worker、Controller は決定論的に動作する
@@ -73,20 +58,7 @@ current_state + event -> next_state
 ```
 
 という状態遷移は Controller が決定する。
-
 AI は指定された State の仕事を実施し、成果物と Event を返す。
-
-例：
-
-```text
-IMPLEMENT
-  ↓
-Codex / Claude
-  ↓
-DONE / QUESTION / ERROR
-  ↓
-Controller
-```
 
 ### 4.2 ドキュメントを AI 間のインターフェースにする
 
@@ -111,10 +83,198 @@ REVIEW
 ```
 
 各 AI にプロジェクト開始時からの全会話を渡すのではなく、現在の State に必要な成果物だけを Context として渡す。
-
 これにより、コンテキスト増大を抑制する。
 
-## 5. 基本 State
+## 5. 役割モデル
+
+Agent Controller では、少なくとも以下の論理 Role を分離する。
+
+- DIRECTOR: 上位仕様と成果物を読み、実装・修正・レビュー継続の指示を作る指揮者 AI
+- IMPLEMENTER: Director の指示と設計成果物に従って実装する AI
+- REVIEWER: 実装成果物を独立にレビューする AI
+- ANSWERER: QandA.md の質問を既存成果物から解決する AI。初期実装では DIRECTOR が兼任してよい
+- CONTROLLER: AI ではなく Python / LangGraph で実装する決定論的な工程制御
+
+DIRECTOR と CONTROLLER は分離する。
+Controller は「次にどの State へ進むか」を決め、Director は「何を実装・修正すべきか」という意味判断を担当する。
+
+## 6. 人間→ChatGPT→CLI AI の手作業転記を自動化する中心ループ
+
+Agent Controller の重要な目的は、これまで人間が ChatGPT と相談し、その回答を Claude Code / Codex CLI へ貼り付けていた往復を自動化することである。
+
+基本フロー：
+
+```text
+上位仕様・成果物
+      ↓
+DIRECTOR
+      ↓ 実装指示
+IMPLEMENTER
+      ↓
+  ┌───┴───────────────┐
+  │                   │
+実装完了             QUESTION
+  │                   │
+  │               QandA.md
+  │                   ↓
+  │                DIRECTOR
+  │                   ↓ 回答・追加指示
+  │               IMPLEMENTER
+  │                   │
+  └───────────┬───────┘
+              ↓
+           REVIEWER
+              │
+      ┌───────┴────────┐
+      │                │
+     PASS            QUESTION / FAIL
+      │                │
+      │             QandA.md
+      │                ↓
+      │             DIRECTOR
+      │                ↓ 回答・修正指示
+      │            IMPLEMENTER
+      │                │
+      └────────────────┘
+              ↓
+           COMPLETE
+```
+
+このループにより、人間は通常時に Agent 間のメッセージを仲介しない。
+
+## 7. Director の責務
+
+DIRECTOR は各工程の上位成果物を読み、IMPLEMENTER / REVIEWER へ具体的な作業指示を生成する。
+
+例：IMPLEMENT State では、Director は以下を読む。
+
+- SPEC.md
+- USECASE.md
+- SEQUENCE.md
+- CLASS.md
+- TESTCASE.md
+- QandA.md の未解決・最新回答
+- 必要に応じて最新 diff / test result
+
+Director の出力は自由会話ではなく、実装 AI がそのまま実行できる指示として保存する。
+
+候補ファイル：
+
+```text
+DIRECTIVE.md
+```
+
+または State ごとの命令ファイルとして管理する。
+
+DIRECTIVE.md には少なくとも以下を含める。
+
+```text
+目的
+対象 State
+参照すべき成果物
+実施すべき変更
+変更してはいけない範囲
+完了条件
+テスト条件
+質問が必要な場合の QandA.md 書式
+```
+
+## 8. Implementer の責務
+
+IMPLEMENTER は上位仕様から直接勝手に工程判断するのではなく、Director の指示と正式成果物に従って作業する。
+
+通常終了時：
+
+```text
+IMPLEMENTER
+  ↓
+変更
+  ↓
+テスト可能なら実行
+  ↓
+RESULT / DONE event
+```
+
+判断不能時：
+
+```text
+IMPLEMENTER
+  ↓
+QandA.md に質問追加
+  ↓
+QUESTION event
+```
+
+Implementer は仕様の空白を推測で埋めない。
+
+## 9. Reviewer の責務
+
+REVIEWER は Implementer と可能な限り別 Worker を使用する。
+
+Reviewer は以下を確認する。
+
+- 上位仕様への適合
+- 設計成果物との整合
+- TESTCASE.md への適合
+- 実装品質
+- 回帰リスク
+- README.md 等の文書更新漏れ
+
+問題が明確なら FAIL / 修正分類を返す。
+判断や仕様確認が必要なら QandA.md に質問を書く。
+
+```text
+REVIEWER
+  ↓
+QandA.md
+  ↓ QUESTION
+DIRECTOR
+```
+
+## 10. QandA.md を Agent 間の共通問い合わせチャネルにする
+
+QandA.md はレビュー専用ではなく、Implementer / Reviewer / Designer 等すべての Worker が利用可能とする。
+
+1 件ごとに最低限以下を持つ。
+
+```text
+Question ID
+Questioner Role
+Questioner Worker
+Current State
+Question
+Reason / Context
+Status: OPEN / ANSWERED / HUMAN_REQUIRED
+Answer
+Answered By
+Related Artifacts
+```
+
+Q&A 処理：
+
+```text
+WORKING_STATE
+    ↓ QUESTION
+ANSWER_QUESTION
+    ↓
+DIRECTOR / ANSWERER
+    ├─ 既存成果物から回答可能 → QandA.md 更新 → 元 State
+    ├─ 上位成果物修正が必要 → SPEC_FIX 等へ遷移
+    └─ 判断不能 → HUMAN_REQUIRED
+```
+
+回答後は Controller が元の State と質問元 Role を保持しておき、適切な Worker に再度指示する。
+
+例：
+
+```text
+IMPLEMENT → QUESTION → DIRECTOR_ANSWER → IMPLEMENT
+REVIEW    → QUESTION → DIRECTOR_ANSWER → IMPLEMENT → REVIEW
+```
+
+Reviewer の質問に対して Director が「コード修正が必要」と判断した場合は、直接 Reviewer に返すのではなく Implementer に修正指示を出し、修正完了後に Reviewer を再実行する。
+
+## 11. 基本 State
 
 初期案：
 
@@ -130,103 +290,69 @@ CLASS_CREATE
 CLASS_REVIEW
 TESTCASE_CREATE
 TESTCASE_REVIEW
+DIRECT
 IMPLEMENT
 TEST
 CODE_REVIEW
 ANSWER_QUESTION
+README_SYNC
+README_REVIEW
 HUMAN_REQUIRED
 WAIT_RESOURCE
 COMPLETE
 ABORT
 ```
 
-将来必要に応じて State を追加する。
+DIRECT は Director が次 Worker 向けの指示を生成する State とする。
+実装の都合により各工程専用 DIRECT State に分割してもよい。
 
-## 6. 基本状態遷移
+## 12. 実装・レビュー・Q&A の状態遷移
 
 ```mermaid
 stateDiagram-v2
-    [*] --> IDLE
-    IDLE --> SPEC_CREATE : NEW_TASK
+    [*] --> DIRECT_IMPLEMENT
 
-    SPEC_CREATE --> SPEC_REVIEW : DONE
-    SPEC_REVIEW --> USECASE_CREATE : PASS
-    SPEC_REVIEW --> SPEC_CREATE : FAIL
-
-    USECASE_CREATE --> USECASE_REVIEW : DONE
-    USECASE_REVIEW --> SEQUENCE_CREATE : PASS
-    USECASE_REVIEW --> USECASE_CREATE : FAIL
-
-    SEQUENCE_CREATE --> SEQUENCE_REVIEW : DONE
-    SEQUENCE_REVIEW --> CLASS_CREATE : PASS
-    SEQUENCE_REVIEW --> SEQUENCE_CREATE : FAIL
-
-    CLASS_CREATE --> CLASS_REVIEW : DONE
-    CLASS_REVIEW --> TESTCASE_CREATE : PASS
-    CLASS_REVIEW --> CLASS_CREATE : FAIL
-
-    TESTCASE_CREATE --> TESTCASE_REVIEW : DONE
-    TESTCASE_REVIEW --> IMPLEMENT : PASS
-    TESTCASE_REVIEW --> TESTCASE_CREATE : FAIL
+    DIRECT_IMPLEMENT --> IMPLEMENT : DIRECTIVE_READY
 
     IMPLEMENT --> TEST : DONE
-    TEST --> CODE_REVIEW : PASS
-    TEST --> IMPLEMENT : FAIL
+    IMPLEMENT --> ANSWER_QUESTION : QUESTION
+    IMPLEMENT --> ROLLBACK : WORKER_ERROR
 
-    CODE_REVIEW --> COMPLETE : PASS
-    CODE_REVIEW --> IMPLEMENT : CODE_FIX
+    ANSWER_QUESTION --> DIRECT_IMPLEMENT : ANSWERED_FROM_DOCS
+    ANSWER_QUESTION --> SPEC_CREATE : SPEC_CHANGE_REQUIRED
+    ANSWER_QUESTION --> HUMAN_REQUIRED : CANNOT_ANSWER
+
+    TEST --> DIRECT_REVIEW : PASS
+    TEST --> DIRECT_IMPLEMENT : FAIL
+
+    DIRECT_REVIEW --> CODE_REVIEW : DIRECTIVE_READY
+
+    CODE_REVIEW --> README_SYNC : PASS
+    CODE_REVIEW --> ANSWER_QUESTION : QUESTION
+    CODE_REVIEW --> DIRECT_IMPLEMENT : CODE_FIX
     CODE_REVIEW --> CLASS_CREATE : CLASS_FIX
     CODE_REVIEW --> SEQUENCE_CREATE : SEQUENCE_FIX
     CODE_REVIEW --> USECASE_CREATE : USECASE_FIX
     CODE_REVIEW --> SPEC_CREATE : SPEC_FIX
 
+    HUMAN_REQUIRED --> DIRECT_IMPLEMENT : HUMAN_ANSWER_IMPLEMENT
+    HUMAN_REQUIRED --> DIRECT_REVIEW : HUMAN_ANSWER_REVIEW
+
+    README_SYNC --> README_REVIEW : DONE
+    README_REVIEW --> COMPLETE : PASS
+    README_REVIEW --> README_SYNC : FAIL
+
+    ROLLBACK --> DIRECT_IMPLEMENT : RETRY
     COMPLETE --> [*]
 ```
 
-## 7. QandA.md
+実際には ANSWER_QUESTION State に return_state / question_source_state / resume_role を保持し、回答後の戻り先を動的に決定する。
 
-QandA.md はレビュー専用ではなく、全 Worker が利用できる AI 間の質問・回答チャネルとする。
-
-質問を出す可能性がある Worker：
-
-- 設計 AI
-- 実装 AI
-- テスト AI
-- レビュー AI
-
-質問が発生した場合：
-
-```text
-WORKING_STATE
-    ↓ QUESTION
-ANSWER_QUESTION
-    ↓ ANSWERED
-元の State に戻る
-```
-
-回答 AI は既存の設計文書から回答可能か確認する。
-
-回答不能の場合は推測せず HUMAN_REQUIRED に遷移する。
-
-人間回答によって仕様変更が必要になった場合、QandA.md のみに情報を残さず、SPEC.md 等の正式成果物へ反映する。
-
-## 8. 手戻り管理
+## 13. 手戻り管理
 
 後工程で上流設計の問題が見つかった場合も、例外扱いせず正式な状態遷移として管理する。
 
-例：
-
-```text
-CODE_REVIEW
-  ↓ SPEC_FIX
-SPEC_CREATE / SPEC_FIX
-  ↓
-SPEC_REVIEW
-  ↓
-必要な下流成果物を再生成・再レビュー
-```
-
-変更の影響度を分類できるようにする。
+変更の影響度：
 
 ```text
 CODE_ONLY
@@ -235,8 +361,6 @@ SEQUENCE
 USECASE
 SPEC
 ```
-
-上流成果物変更時には、依存する下流成果物を STALE として扱うことを検討する。
 
 依存関係：
 
@@ -252,13 +376,16 @@ CLASS
 TESTCASE
  ↓
 CODE
+ ↓
+README
 ```
 
-## 9. Git を checkpoint として利用する
+上流成果物変更時には依存する下流成果物を STALE とする。
+SPEC レベルの変更時は README_SYNC を必須とする。
+
+## 14. Git を checkpoint として利用する
 
 Git commit を State Machine の安全な checkpoint として利用する。
-
-基本ルール：
 
 ```text
 State 開始
@@ -280,63 +407,151 @@ push
 
 State 完了時の commit を「その State が正常完了した証拠」とする。
 
-## 10. Token / Session Limit 対策
+## 15. Token / Session Limit 対策
 
-Claude Code や Codex CLI が以下のような利用制限で突然停止することを前提に設計する。
-
-```text
-You've hit your session limit
-```
-
-Controller は CLI 出力・終了コード等から resource limit を検出する。
-
-異常終了した場合：
+Claude Code や Codex CLI の利用制限による突然停止を前提にする。
 
 ```text
-Worker 実行
-  ↓
 SESSION_LIMIT / RATE_LIMIT
   ↓
-現在 State を失敗扱い
+現在 State 失敗
   ↓
-State 開始時 checkpoint commit まで rollback
+State 開始時 checkpoint commit へ rollback
   ↓
-別 Worker 選択
+別 Worker を選択
   ↓
-同じ State を最初から再実行
+Director が同じ目的の指示を再生成または再利用
+  ↓
+同じ State を再実行
 ```
 
-重要な設計方針：
+AI に token limit 直前の引き継ぎ作成を依存しない。
 
-**AI に token limit 直前の引き継ぎ文書作成を依存しない。**
+## 16. Worker 抽象化
 
-突然停止しても Git checkpoint と State DB から安全に再実行できる設計を優先する。
+Controller が Claude / Codex / AntiGravity / Grok 固有処理に依存しすぎないよう共通 Worker Interface を定義する。
 
-## 11. State の再実行性
+Role 例：
 
-各 State は可能な限り以下を満たすようにする。
+```text
+DIRECTOR
+IMPLEMENTER
+REVIEWER
+ANSWERER
+SPEC_CREATOR
+DESIGNER
+```
 
-- State 開始時点の clean な checkpoint から再実行可能
-- 同じ入力に対して再実行しても破壊的な副作用を起こさない
-- State 途中の成果物は完了扱いにしない
-- 成功時のみ commit / push する
+通常時：
 
-長時間 State は将来サブ State 化することも検討する。
+```text
+Claude IMPLEMENTER → Codex REVIEWER
+Codex IMPLEMENTER  → Claude REVIEWER
+```
 
-## 12. SQLite に保持する情報（案）
+片方が利用不能なら single-agent mode を許可するが、結果に品質モードを残す。
 
-例：
+## 17. 状態遷移ログ
+
+人間が最初に確認するログとして、全ての状態遷移を記録する。
+
+必須情報：
+
+```text
+timestamp
+run_id
+from_state
+event
+to_state
+role
+worker
+reason
+retry_count
+checkpoint_commit
+```
+
+人間向け表示例：
+
+```text
+16:21:03 | TEST        | TEST_FAIL     | IMPLEMENT   | pytest | retry=1
+16:27:41 | IMPLEMENT   | SESSION_LIMIT | IMPLEMENT   | claude | rollback=abc1234
+16:27:43 | IMPLEMENT   | WORKER_SWITCH | IMPLEMENT   | codex  | reason=claude_session_limit
+16:31:10 | CODE_REVIEW | SPEC_FIX      | SPEC_CREATE | codex  | reason=requirement_ambiguity
+```
+
+SQLite の Event History を正本とし、人間向けテキストログを生成可能にする。
+
+## 18. 無限ループ防止
+
+AI を自律運転させる以上、同一 State 間を無限に往復しないための Guard を Controller に必須実装する。
+
+最低限：
+
+- State ごとの retry 上限
+- 同一 from_state + event + to_state の連続回数上限
+- 1 run あたりの最大 state transition 数
+- 同一 Q&A の再発検出
+- 同じ test failure / review finding が繰り返される NO_PROGRESS 検出
+- Worker を変更しても同一失敗が続く場合は HUMAN_REQUIRED
+- 同じ理由で SPEC まで複数回戻る場合は LOOP_DETECTED → HUMAN_REQUIRED
+
+AI 自身に「無限ループかどうか」を最終判断させず、Controller が機械的上限を持つ。
+
+## 19. README.md 同期
+
+README.md は更新漏れしやすいため正式な成果物として扱う。
+
+特に以下では README_SYNC を必須とする。
+
+- SPEC_CHANGE
+- USECASE_CHANGE
+- 公開 API / CLI 変更
+- インストール方法変更
+- 設定方法変更
+- ユーザー向け挙動変更
+
+README_SYNC → README_REVIEW を通過してから COMPLETE とする。
+
+## 20. COMPLETE 条件
+
+COMPLETE は単にコードレビューが PASS した状態ではない。
+
+最低条件：
+
+```text
+SPEC latest
+USECASE latest
+SEQUENCE latest
+CLASS latest
+TESTCASE latest
+CODE latest
+README latest
+TEST PASS
+REVIEW PASS
+QandA OPEN = 0
+working tree clean
+commit済み
+push済み
+```
+
+## 21. SQLite に保持する情報
+
+候補：
 
 ```text
 project_id
+run_id
 current_state
 previous_state
 return_state
+question_source_state
+resume_role
 last_event
 active_worker
 active_role
 checkpoint_commit
 retry_count
+transition_count
 status
 started_at
 updated_at
@@ -350,363 +565,81 @@ updated_at
 - State execution history
 - Q&A status
 - Artifact status (VALID / STALE)
+- Directive history
+- Review cycle count
+- No-progress fingerprint
 
-## 13. Worker 抽象化
+## 22. MVP
 
-Controller が Claude / Codex / AntiGravity / Grok 固有処理に依存しすぎないよう、共通 Worker インターフェースを定義する。
+最初の実証では全工程を一気に作らず、今回最も重要な「人間による ChatGPT→CLI AI 転記の削減」を先に検証する。
 
-概念例：
-
-```python
-class Worker:
-    def available(self) -> bool:
-        ...
-
-    def run(self, role, context, instruction):
-        ...
-
-    def classify_error(self, result):
-        ...
-```
-
-Role 例：
+MVP Flow：
 
 ```text
-SPEC_CREATOR
-DESIGNER
-IMPLEMENTER
-REVIEWER
-ANSWERER
+既存 SPEC.md
+    ↓
+DIRECTOR
+    ↓ DIRECTIVE.md
+IMPLEMENTER (Claude or Codex)
+    ├─ QUESTION → QandA.md → DIRECTOR → IMPLEMENTER
+    └─ DONE
+          ↓
+        TEST
+          ↓
+       REVIEWER (別 AI)
+          ├─ QUESTION → QandA.md → DIRECTOR → IMPLEMENTER → REVIEWER
+          ├─ FAIL     → DIRECTOR → IMPLEMENTER → REVIEWER
+          └─ PASS
+               ↓
+           README_SYNC
+               ↓
+           COMPLETE
 ```
 
-## 14. Worker 選択
+このループが人間介入なしで最低 1 回完走することを最初の成功条件とする。
 
-設定例：
-
-```yaml
-workers:
-  claude:
-    roles:
-      - design
-      - implement
-      - review
-    priority: 1
-
-  codex:
-    roles:
-      - implement
-      - review
-    priority: 1
-
-  antigravity:
-    roles:
-      - implement
-      - review
-    priority: 2
-
-  grok:
-    roles:
-      - review
-      - research
-    priority: 3
-```
-
-初期実装では Claude Code + Codex CLI を優先し、AntiGravity / Grok は fallback とする。
-
-## 15. Review 方針
-
-通常時は可能な限り実装者と Reviewer を別 Worker にする。
+## 23. 最終的なイメージ
 
 ```text
-Claude IMPLEMENT -> Codex REVIEW
-Codex IMPLEMENT  -> Claude REVIEW
-```
-
-片方が利用不能の場合は single-agent mode を許可する。
-
-ただし結果には通常レビューと区別できる情報を残す。
-
-例：
-
-```text
-PASS
-PASS_WITH_SINGLE_AGENT_REVIEW
-PASS_WITH_FALLBACK_REVIEW
-```
-
-## 16. Controller が AI である必要はない
-
-工程制御、retry、rollback、Worker 切替は Python / LangGraph の決定論的処理として実装する。
-
-AI を使用するのは、設計判断、実装、レビュー、Q&A 回答など意味理解が必要な部分に限定する。
-
-```text
-工程判断 -> Controller
-内容判断 -> AI Worker
-```
-
-この責務分離を基本原則とする。
-
-## 17. 最初の実装範囲
-
-最初からすべてを作らず、以下の MVP を目標とする。
-
-1. Python プロジェクト作成
-2. Pydantic による State / Event モデル
-3. SQLite 永続化
-4. LangGraph による基本状態遷移
-5. Claude Code Worker
-6. Codex CLI Worker
-7. Worker availability / error classification
-8. Git checkpoint commit 管理
-9. session limit 検出
-10. rollback + Worker fallback
-11. SPEC -> IMPLEMENT -> REVIEW 程度の小さな実証フロー
-
-その後、USECASE / SEQUENCE / CLASS / TESTCASE / QandA / AntiGravity / Grok を段階的に追加する。
-
-## 18. 今後検討すること
-
-- Claude Code / Codex CLI の resource limit 検出方法
-- 各 CLI の subprocess 実行方式
-- CLI ごとの終了コード・エラーメッセージ分類
-- Windows / Linux / WSL での差異
-- worktree を State ごとに分離するか
-- rollback 時の untracked file の扱い
-- AI が勝手に commit した場合の扱い
-- State ごとの timeout
-- retry 上限
-- Human in the Loop の UI / CLI
-- 複数プロジェクト同時実行
-- Worker の並列実行
-- ログと実行トレースの可視化
-- LangGraph の checkpoint 機能と独自 SQLite 状態管理の責務分担
-
-## 19. 最終的なイメージ
-
-```text
-                  +------------------+
-                  | Agent Controller |
-                  |   State Machine  |
-                  +---------+--------+
-                            |
-                  State / Role / Input
-                            |
-          +-----------------+-----------------+
-          |                 |                 |
-          v                 v                 v
-      Claude Code       Codex CLI       Fallback Worker
-                                           |
-                                  AntiGravity / Grok
-          |                 |                 |
-          +-----------------+-----------------+
-                            |
-                 Artifact / QandA / Event
-                            |
-                            v
-                  +------------------+
-                  |   Controller     |
-                  +--------+---------+
-                           |
-                    Git checkpoint
-                    SQLite state
-                           |
-                           v
-                       Next State
+                        +------------------+
+                        | Agent Controller |
+                        | State / Event DB |
+                        +--------+---------+
+                                 |
+                                 v
+                        +------------------+
+                        |    DIRECTOR      |
+                        | 意味判断・指示生成 |
+                        +--------+---------+
+                                 |
+                            DIRECTIVE.md
+                                 |
+                    +------------+-------------+
+                    |                          |
+                    v                          v
+              +-------------+            +-------------+
+              | IMPLEMENTER |            |  REVIEWER   |
+              +------+------+            +------+------+
+                     |                          |
+                     +----------+  +------------+
+                                |  |
+                                v  v
+                              QandA.md
+                                |
+                                v
+                             DIRECTOR
+                                |
+                       回答 / 修正指示
+                                |
+                                v
+                         IMPLEMENTER / REVIEWER
+                                |
+                                v
+                       Git checkpoint + push
+                                |
+                                v
+                           Next State
 ```
 
 Agent Controller が継続性を持ち、AI Worker は交換可能とする。
-
-AI が停止しても開発工程そのものは停止しない構造を目指す。
-
-## 20. README.md の自動同期
-
-README.md は手作業に任せると更新漏れが発生しやすいため、正式な成果物として State Machine に組み込む。
-
-特に SPEC / USECASE レベルの変更では README 更新確認を必須とする。
-
-変更影響度の例：
-
-```text
-CODE_ONLY      -> DOC_IMPACT = CHECK
-CLASS_CHANGE   -> DOC_IMPACT = CHECK
-USECASE_CHANGE -> DOC_IMPACT = REQUIRED
-SPEC_CHANGE    -> DOC_IMPACT = REQUIRED
-```
-
-README 更新用 State の例：
-
-```text
-DOC_SYNC
-README_REVIEW
-```
-
-完了条件では、SPEC / USECASE / SEQUENCE / CLASS / TESTCASE / CODE だけでなく README.md も最新であることを確認する。
-
-README 更新 Worker は既存 README.md だけを根拠にせず、最新の SPEC.md、USECASE.md、実装、TESTCASE.md、変更要求等を参照して同期する。
-
-## 21. 状態遷移ログ
-
-状態遷移ログは Agent Controller で最優先に確認する運用ログとする。
-
-**「どの State で、どの Event が発生し、どの State に遷移したか」**を必ず1遷移1レコードで記録する。
-
-最低限、以下を保持する。
-
-```text
-timestamp
-project_id
-run_id
-transition_id
-from_state
-event
-to_state
-worker
-role
-reason
-retry_count
-checkpoint_before
-checkpoint_after
-result
-```
-
-人間が真っ先に読むログは、詳細な AI 会話ログではなく状態遷移ログとする。
-
-表示例：
-
-```text
-2026-08-07 16:20:12 | IMPLEMENT   | DONE          | TEST         | claude | retry=0
-2026-08-07 16:21:03 | TEST        | TEST_FAIL     | IMPLEMENT    | pytest | retry=1 | reason=test_login_failed
-2026-08-07 16:27:41 | IMPLEMENT   | SESSION_LIMIT | IMPLEMENT    | claude | retry=2 | rollback=abc1234
-2026-08-07 16:27:43 | IMPLEMENT   | WORKER_SWITCH | IMPLEMENT    | codex  | retry=2 | reason=claude_session_limit
-2026-08-07 16:31:10 | CODE_REVIEW | SPEC_FIX      | SPEC_CREATE  | codex  | retry=0 | reason=requirement_ambiguity
-```
-
-ログだけを見れば、正常に前進しているのか、どこで後戻りしたのか、何が原因だったのかを把握できるようにする。
-
-SQLite の Event history / State execution history を正本とし、必要に応じて人間向けのテキストログにも同時出力する。
-
-ログレベルは最低限以下を想定する。
-
-```text
-INFO    正常遷移
-WARN    retry / rollback / fallback
-ERROR   Worker異常 / State失敗
-FATAL   継続不能 / HUMAN_REQUIRED / ABORT
-```
-
-## 22. 無限ループ防止
-
-State Machine に循環経路を許可する一方、無制限の再試行は絶対に許可しない。
-
-単純な retry_count だけでなく、以下の複数のガードを持つ。
-
-### 22.1 State 単位の retry 上限
-
-同一 State の連続失敗回数に上限を設ける。
-
-```text
-IMPLEMENT retry >= 3 -> ESCALATE / HUMAN_REQUIRED
-```
-
-上限値は State ごとに設定可能とする。
-
-### 22.2 同一遷移の連続回数制限
-
-例えば以下が何度も続く場合を検出する。
-
-```text
-IMPLEMENT -> TEST -> IMPLEMENT -> TEST -> ...
-```
-
-同一の State/Event/NextState パターンが一定回数を超えたら LOOP_DETECTED を発生させる。
-
-### 22.3 一定区間内の最大遷移数
-
-1 run あたり、または一定時間内の State transition 数に上限を設ける。
-
-```text
-MAX_TRANSITIONS_PER_RUN
-MAX_TRANSITIONS_PER_HOUR
-```
-
-上限超過時は無条件に自動実行を停止し、原因解析 State または HUMAN_REQUIRED へ遷移する。
-
-### 22.4 進捗のないループ検出
-
-単に State が循環しているだけでなく、成果物や Git commit が実質的に進んでいない状態を検出する。
-
-例：
-
-```text
-同じエラー
-同じレビュー指摘
-同じ Q&A
-同じ diff
-同じ test failure
-```
-
-が繰り返される場合は NO_PROGRESS と判定する。
-
-可能であれば成果物 hash、Git diff hash、error signature、review issue ID 等を比較する。
-
-### 22.5 Worker を替えてから諦める
-
-同じ Worker で単純再試行を繰り返さない。
-
-```text
-Claude failure
-  -> retry
-  -> Claude failure
-  -> Codexへ切替
-  -> failure
-  -> fallback Worker
-  -> failure
-  -> HUMAN_REQUIRED
-```
-
-Worker fallback も回数制限を持つ。
-
-### 22.6 後戻り深度の監視
-
-CODE_REVIEW から SPEC_CREATE まで戻ること自体は正常な設計とするが、同じ変更要求によって何度も SPEC まで戻る場合は LOOP_DETECTED とする。
-
-```text
-SPEC_FIX_COUNT_PER_CHANGE_REQUEST
-```
-
-などを記録し、一定回数を超えた場合は自動継続しない。
-
-### 22.7 Loop検出時の遷移
-
-```text
-LOOP_DETECTED
-    ↓
-停止前checkpointを保存
-    ↓
-状態遷移ログへ原因を記録
-    ↓
-必要なら別Workerによる原因分析
-    ↓
-HUMAN_REQUIRED または WAIT_RESOURCE
-```
-
-無限ループ防止では「止めないこと」よりも「安全に止まり、なぜ止まったかがログですぐ分かること」を優先する。
-
-## 23. 完了判定
-
-COMPLETE へ遷移する前に最低限以下を確認する。
-
-```text
-必要な成果物が VALID
-README.md が最新
-TEST PASS
-REVIEW PASS
-未解決 Q&A なし
-未処理 HUMAN_REQUIRED なし
-Git working tree clean
-必要な commit / push 完了
-loop guard 異常なし
-```
-
-これらを満たさない場合は COMPLETE にしない。
+人間は通常の Agent 間メッセージ交換から外れ、既存成果物から回答不能な要求判断や最終評価など、本当に人間が必要な箇所だけに介入する構造を目指す。
