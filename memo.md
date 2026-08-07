@@ -518,3 +518,195 @@ AI を使用するのは、設計判断、実装、レビュー、Q&A 回答な�
 Agent Controller が継続性を持ち、AI Worker は交換可能とする。
 
 AI が停止しても開発工程そのものは停止しない構造を目指す。
+
+## 20. README.md の自動同期
+
+README.md は手作業に任せると更新漏れが発生しやすいため、正式な成果物として State Machine に組み込む。
+
+特に SPEC / USECASE レベルの変更では README 更新確認を必須とする。
+
+変更影響度の例：
+
+```text
+CODE_ONLY      -> DOC_IMPACT = CHECK
+CLASS_CHANGE   -> DOC_IMPACT = CHECK
+USECASE_CHANGE -> DOC_IMPACT = REQUIRED
+SPEC_CHANGE    -> DOC_IMPACT = REQUIRED
+```
+
+README 更新用 State の例：
+
+```text
+DOC_SYNC
+README_REVIEW
+```
+
+完了条件では、SPEC / USECASE / SEQUENCE / CLASS / TESTCASE / CODE だけでなく README.md も最新であることを確認する。
+
+README 更新 Worker は既存 README.md だけを根拠にせず、最新の SPEC.md、USECASE.md、実装、TESTCASE.md、変更要求等を参照して同期する。
+
+## 21. 状態遷移ログ
+
+状態遷移ログは Agent Controller で最優先に確認する運用ログとする。
+
+**「どの State で、どの Event が発生し、どの State に遷移したか」**を必ず1遷移1レコードで記録する。
+
+最低限、以下を保持する。
+
+```text
+timestamp
+project_id
+run_id
+transition_id
+from_state
+event
+to_state
+worker
+role
+reason
+retry_count
+checkpoint_before
+checkpoint_after
+result
+```
+
+人間が真っ先に読むログは、詳細な AI 会話ログではなく状態遷移ログとする。
+
+表示例：
+
+```text
+2026-08-07 16:20:12 | IMPLEMENT   | DONE          | TEST         | claude | retry=0
+2026-08-07 16:21:03 | TEST        | TEST_FAIL     | IMPLEMENT    | pytest | retry=1 | reason=test_login_failed
+2026-08-07 16:27:41 | IMPLEMENT   | SESSION_LIMIT | IMPLEMENT    | claude | retry=2 | rollback=abc1234
+2026-08-07 16:27:43 | IMPLEMENT   | WORKER_SWITCH | IMPLEMENT    | codex  | retry=2 | reason=claude_session_limit
+2026-08-07 16:31:10 | CODE_REVIEW | SPEC_FIX      | SPEC_CREATE  | codex  | retry=0 | reason=requirement_ambiguity
+```
+
+ログだけを見れば、正常に前進しているのか、どこで後戻りしたのか、何が原因だったのかを把握できるようにする。
+
+SQLite の Event history / State execution history を正本とし、必要に応じて人間向けのテキストログにも同時出力する。
+
+ログレベルは最低限以下を想定する。
+
+```text
+INFO    正常遷移
+WARN    retry / rollback / fallback
+ERROR   Worker異常 / State失敗
+FATAL   継続不能 / HUMAN_REQUIRED / ABORT
+```
+
+## 22. 無限ループ防止
+
+State Machine に循環経路を許可する一方、無制限の再試行は絶対に許可しない。
+
+単純な retry_count だけでなく、以下の複数のガードを持つ。
+
+### 22.1 State 単位の retry 上限
+
+同一 State の連続失敗回数に上限を設ける。
+
+```text
+IMPLEMENT retry >= 3 -> ESCALATE / HUMAN_REQUIRED
+```
+
+上限値は State ごとに設定可能とする。
+
+### 22.2 同一遷移の連続回数制限
+
+例えば以下が何度も続く場合を検出する。
+
+```text
+IMPLEMENT -> TEST -> IMPLEMENT -> TEST -> ...
+```
+
+同一の State/Event/NextState パターンが一定回数を超えたら LOOP_DETECTED を発生させる。
+
+### 22.3 一定区間内の最大遷移数
+
+1 run あたり、または一定時間内の State transition 数に上限を設ける。
+
+```text
+MAX_TRANSITIONS_PER_RUN
+MAX_TRANSITIONS_PER_HOUR
+```
+
+上限超過時は無条件に自動実行を停止し、原因解析 State または HUMAN_REQUIRED へ遷移する。
+
+### 22.4 進捗のないループ検出
+
+単に State が循環しているだけでなく、成果物や Git commit が実質的に進んでいない状態を検出する。
+
+例：
+
+```text
+同じエラー
+同じレビュー指摘
+同じ Q&A
+同じ diff
+同じ test failure
+```
+
+が繰り返される場合は NO_PROGRESS と判定する。
+
+可能であれば成果物 hash、Git diff hash、error signature、review issue ID 等を比較する。
+
+### 22.5 Worker を替えてから諦める
+
+同じ Worker で単純再試行を繰り返さない。
+
+```text
+Claude failure
+  -> retry
+  -> Claude failure
+  -> Codexへ切替
+  -> failure
+  -> fallback Worker
+  -> failure
+  -> HUMAN_REQUIRED
+```
+
+Worker fallback も回数制限を持つ。
+
+### 22.6 後戻り深度の監視
+
+CODE_REVIEW から SPEC_CREATE まで戻ること自体は正常な設計とするが、同じ変更要求によって何度も SPEC まで戻る場合は LOOP_DETECTED とする。
+
+```text
+SPEC_FIX_COUNT_PER_CHANGE_REQUEST
+```
+
+などを記録し、一定回数を超えた場合は自動継続しない。
+
+### 22.7 Loop検出時の遷移
+
+```text
+LOOP_DETECTED
+    ↓
+停止前checkpointを保存
+    ↓
+状態遷移ログへ原因を記録
+    ↓
+必要なら別Workerによる原因分析
+    ↓
+HUMAN_REQUIRED または WAIT_RESOURCE
+```
+
+無限ループ防止では「止めないこと」よりも「安全に止まり、なぜ止まったかがログですぐ分かること」を優先する。
+
+## 23. 完了判定
+
+COMPLETE へ遷移する前に最低限以下を確認する。
+
+```text
+必要な成果物が VALID
+README.md が最新
+TEST PASS
+REVIEW PASS
+未解決 Q&A なし
+未処理 HUMAN_REQUIRED なし
+Git working tree clean
+必要な commit / push 完了
+loop guard 異常なし
+```
+
+これらを満たさない場合は COMPLETE にしない。
