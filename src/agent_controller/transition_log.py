@@ -84,6 +84,16 @@ class TransitionLogger:
     def __init__(self, store: Store) -> None:
         self.store = store
 
+    def persist(self, run: RunState, transition: Transition) -> Transition:
+        """すでに組み立てた遷移を保存する。
+
+        Subgraph 側（document_stage.py）が phase 間の遷移を記録するのに使う。
+        phase 間の移動はトップレベルの遷移表を通さないため、apply_event は呼ばない。
+        """
+        self.store.append_transition(transition)
+        self.store.save_run(run)
+        return transition
+
     def record(
         self,
         run: RunState,
@@ -105,9 +115,7 @@ class TransitionLogger:
             worker=worker,
             reason=reason,
         )
-        self.store.append_transition(transition)
-        self.store.save_run(run)
-        return transition
+        return self.persist(run, transition)
 
     def history(self, run_id: str) -> list[Transition]:
         return self.store.transitions(run_id)

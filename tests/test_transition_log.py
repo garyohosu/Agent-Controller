@@ -34,20 +34,24 @@ class TestFormatPosition:
         assert format_position(State.IMPLEMENT) == "IMPLEMENT"
         assert format_position(State.DESIGN, DocumentStage.CLASS) == "DESIGN/CLASS"
         assert (
-            format_position(State.DESIGN, DocumentStage.CLASS, Phase.REVIEW)
-            == "DESIGN/CLASS/REVIEW"
+            format_position(State.DESIGN, DocumentStage.CLASS, Phase.REVIEW_LIGHT)
+            == "DESIGN/CLASS/REVIEW_LIGHT"
         )
 
 
 class TestRender:
     def test_matches_the_instruction_example(self) -> None:
-        """指示書 §10 の表示例をそのまま再現できること。"""
+        """指示書 §10 の表示例の形をそのまま再現できること。
+
+        §10 の例は phase を単に REVIEW と書いているが、§4 の FAST / DEEP PATH を
+        phase として表すために REVIEW_LIGHT / REVIEW_DEEP へ分けた。書式は同じ。
+        """
         transition = Transition(
             timestamp=at(19, 10, 12),
             run_id="run-1",
             state=State.DESIGN,
             substate=DocumentStage.CLASS,
-            phase=Phase.REVIEW,
+            phase=Phase.REVIEW_LIGHT,
             from_state=State.DESIGN,
             from_substate=DocumentStage.CLASS,
             event=Event.LOCAL_FIX,
@@ -59,7 +63,7 @@ class TestRender:
         )
 
         assert render_transition(transition, UTC) == (
-            "19:10:12 | DESIGN/CLASS/REVIEW | LOCAL_FIX\n"
+            "19:10:12 | DESIGN/CLASS/REVIEW_LIGHT | LOCAL_FIX\n"
             "         -> DESIGN/CLASS/FIX | worker=CODEX_CLI | retry=1"
         )
 
@@ -69,7 +73,7 @@ class TestRender:
             run_id="run-1",
             state=State.DESIGN,
             substate=DocumentStage.CLASS,
-            phase=Phase.REVIEW,
+            phase=Phase.REVIEW_LIGHT,
             from_state=State.DESIGN,
             event=Event.UPSTREAM_CHANGE_REQUIRED,
             to_state=State.DESIGN,
@@ -81,6 +85,25 @@ class TestRender:
         assert "UPSTREAM_CHANGE_REQUIRED" in rendered
         assert "-> DESIGN/SEQUENCE" in rendered
         assert "reason=sequence responsibility mismatch" in rendered
+
+    def test_from_phase_reads_as_the_mirror_of_to_phase(self) -> None:
+        """from_state/from_substate/from_phase と to_* が対称に読めること。"""
+        transition = Transition(
+            timestamp=at(19, 10, 12),
+            run_id="run-1",
+            state=State.DESIGN,
+            substate=DocumentStage.CLASS,
+            phase=Phase.REVIEW_LIGHT,
+            from_state=State.DESIGN,
+            from_substate=DocumentStage.CLASS,
+            event=Event.LOCAL_FIX,
+            to_state=State.DESIGN,
+            to_substate=DocumentStage.CLASS,
+            to_phase=Phase.FIX,
+        )
+
+        assert transition.from_phase == Phase.REVIEW_LIGHT
+        assert transition.from_phase == transition.phase
 
     def test_omits_empty_details(self) -> None:
         transition = Transition(

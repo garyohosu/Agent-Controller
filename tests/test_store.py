@@ -28,7 +28,7 @@ class TestRuns:
             run_id="run-a",
             current_state=State.DESIGN,
             substate=DocumentStage.CLASS,
-            phase=Phase.REVIEW,
+            phase=Phase.REVIEW_LIGHT,
             active_role=Role.REVIEWER,
             active_worker=Worker.CODEX_CLI,
             checkpoint_commit="deadbee",
@@ -41,7 +41,7 @@ class TestRuns:
         assert loaded is not None
         assert loaded.current_state == State.DESIGN
         assert loaded.substate == DocumentStage.CLASS
-        assert loaded.phase == Phase.REVIEW
+        assert loaded.phase == Phase.REVIEW_LIGHT
         assert loaded.active_worker == Worker.CODEX_CLI
         assert loaded.checkpoint_commit == "deadbee"
         assert loaded.retry_count == 2
@@ -96,7 +96,7 @@ class TestTransitions:
                 run_id=run.run_id,
                 state=State.DESIGN,
                 substate=DocumentStage.CLASS,
-                phase=Phase.REVIEW,
+                phase=Phase.REVIEW_LIGHT,
                 from_state=State.DESIGN,
                 from_substate=DocumentStage.CLASS,
                 event=Event.LOCAL_FIX,
@@ -113,7 +113,7 @@ class TestTransitions:
 
         stored = store.transitions(run.run_id)[0]
         assert stored.substate == DocumentStage.CLASS
-        assert stored.phase == Phase.REVIEW
+        assert stored.phase == Phase.REVIEW_LIGHT
         assert stored.to_phase == Phase.FIX
         assert stored.worker == Worker.CODEX_CLI
         assert stored.reason == "naming mismatch"

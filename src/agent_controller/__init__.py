@@ -1,18 +1,28 @@
 """Agent Controller: deterministic state machine driving exchangeable AI workers."""
 
+from agent_controller.document_stage import (
+    STAGE_TRANSITIONS,
+    DocumentStageConfig,
+    next_phase,
+    run_document_stage,
+    stage_completed,
+)
 from agent_controller.models import (
+    DEFAULT_REVIEW_LEVELS,
     ArtifactKind,
+    ArtifactState,
     ArtifactStatus,
     DocumentStage,
     Event,
     Phase,
+    ReviewLevel,
     Role,
     RunState,
     RunStatus,
     State,
+    Transition,
     Worker,
 )
-from agent_controller.models import ArtifactState, Transition
 from agent_controller.transitions import (
     RESUME,
     TRANSITIONS,
@@ -23,15 +33,19 @@ from agent_controller.transitions import (
 )
 
 __all__ = [
+    "DEFAULT_REVIEW_LEVELS",
     "RESUME",
+    "STAGE_TRANSITIONS",
     "TRANSITIONS",
     "ArtifactKind",
     "ArtifactState",
     "ArtifactStatus",
     "DocumentStage",
+    "DocumentStageConfig",
     "Event",
     "MissingReturnStateError",
     "Phase",
+    "ReviewLevel",
     "Role",
     "RunState",
     "RunStatus",
@@ -40,5 +54,8 @@ __all__ = [
     "UnknownTransitionError",
     "Worker",
     "allowed_events",
+    "next_phase",
     "next_state",
+    "run_document_stage",
+    "stage_completed",
 ]

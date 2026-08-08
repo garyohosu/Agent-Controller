@@ -73,30 +73,54 @@ DOCUMENT_STAGE_ORDER: tuple[DocumentStage, ...] = (
 
 
 class Phase(StrEnum):
-    """Document Stage Subgraph 内の phase（指示書 §3）。
+    """Document Stage Subgraph 内の phase（指示書 §3 / §4）。
 
-    値のみ先に定義する。Subgraph 本体は §17-6 で実装する。
+    §3 の図では REVIEW は 1 つだが、§4 の FAST PATH / DEEP PATH を phase として
+    素直に表すため REVIEW_LIGHT と REVIEW_DEEP に分けている。
+    通常は REVIEW_LIGHT だけを通り、SERIOUS_ISSUE が出た時だけ REVIEW_DEEP へ上がる。
     """
 
     GENERATE = "GENERATE"
-    REVIEW = "REVIEW"
+    REVIEW_LIGHT = "REVIEW_LIGHT"
+    REVIEW_DEEP = "REVIEW_DEEP"
     FIX = "FIX"
+    QANDA = "QANDA"
     COMPLETE = "COMPLETE"
 
 
+REVIEW_PHASES: frozenset[Phase] = frozenset({Phase.REVIEW_LIGHT, Phase.REVIEW_DEEP})
+
+
 class ReviewLevel(StrEnum):
-    """レビュー強度（指示書 §4 / §5）。通常は LIGHT、疑いがある時だけ DEEP。"""
+    """レビュー強度（指示書 §4 / §5）。通常は LIGHT、疑いがある時だけ DEEP。
+
+    Document Stage の設定値であり、その stage で最初に入る review phase を決める。
+    """
 
     LIGHT = "LIGHT"
     DEEP = "DEEP"
+
+    @property
+    def phase(self) -> Phase:
+        return Phase.REVIEW_DEEP if self is ReviewLevel.DEEP else Phase.REVIEW_LIGHT
+
+
+DEFAULT_REVIEW_LEVELS: dict[DocumentStage, ReviewLevel] = {
+    DocumentStage.SPEC: ReviewLevel.DEEP,
+    DocumentStage.USECASE: ReviewLevel.DEEP,
+    DocumentStage.SEQUENCE: ReviewLevel.LIGHT,
+    DocumentStage.CLASS: ReviewLevel.LIGHT,
+    DocumentStage.UI: ReviewLevel.LIGHT,
+    DocumentStage.TESTCASE: ReviewLevel.LIGHT,
+}
+"""指示書 §5 の初期値。State Machine 側で LIGHT → DEEP へ昇格できる。"""
 
 
 class Event(StrEnum):
     """Worker が返す Event。Controller はこれを見て次 State を決める。
 
     指示書に名前が出ている Event をそのまま使う。
-    末尾の 4 件は指示書に明記が無いが、IDLE / WAIT_RESOURCE / HUMAN_REQUIRED /
-    ABORT へ出入りするために必要なため補った（result に記録済み）。
+    それ以外は追加した理由をブロックごとに記す（result に記録済み）。
     """
 
     # 指示書に明記されている Event
@@ -113,7 +137,13 @@ class Event(StrEnum):
     LOOP_DETECTED = "LOOP_DETECTED"
     CANNOT_ANSWER = "CANNOT_ANSWER"
 
-    # 補った Event（指示書に名前は無いが遷移上必要）
+    # 指示書 §3 の max_review_retry / §11 の retry 上限を Event 化したもの。
+    # NO_PROGRESS とは分ける。RETRY_LIMIT は回数の超過、NO_PROGRESS は同じ失敗の
+    # 繰り返し（fingerprint）で、判定材料が違う。
+    RETRY_LIMIT = "RETRY_LIMIT"
+
+    # 遷移上必要なため補った Event。IDLE を出る / HUMAN_REQUIRED・WAIT_RESOURCE から
+    # 戻る / 終了要求を出す、をいずれも暗黙処理にせず正式な Event にする。
     START = "START"
     HUMAN_ANSWER = "HUMAN_ANSWER"
     RESOURCE_AVAILABLE = "RESOURCE_AVAILABLE"
@@ -203,7 +233,16 @@ class RunState(BaseModel):
     """HUMAN_REQUIRED / WAIT_RESOURCE から復帰する先。"""
 
     question_source_state: State | None = None
+    question_source_phase: Phase | None = None
+    """QANDA へ入る前の phase。回答後はここへ戻る（指示書 §3 / §9）。"""
+
     resume_role: Role | None = None
+
+    review_phase: Phase | None = None
+    """現在の Document Stage で有効なレビュー強度。SERIOUS_ISSUE で LIGHT→DEEP に上がる。"""
+
+    review_retry_count: int = 0
+    """現在の Document Stage で FIX からレビューへ戻った回数（§3 の max_review_retry 用）。"""
 
     last_event: Event | None = None
 
@@ -256,6 +295,17 @@ class Transition(BaseModel):
 
     retry_count: int = 0
     checkpoint_commit: str | None = None
+
+    @property
+    def from_phase(self) -> Phase | None:
+        """遷移元の phase。
+
+        §10 の項目一覧は state / substate / phase をひとまとまりで挙げており、
+        これは遷移を評価した位置＝遷移元を指す。読むときに
+        from_state / from_substate / from_phase と to_state / to_substate / to_phase
+        が対称に見えるよう、別カラムを増やさず別名だけ用意する。
+        """
+        return self.phase
 
 
 class ArtifactState(BaseModel):
