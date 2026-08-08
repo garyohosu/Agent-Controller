@@ -17,6 +17,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from agent_controller.migrations import migrate
 from agent_controller.models import (
     ArtifactKind,
     ArtifactState,
@@ -25,85 +26,6 @@ from agent_controller.models import (
     utcnow,
 )
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS runs (
-    run_id                TEXT PRIMARY KEY,
-    project_id            TEXT NOT NULL,
-    current_state         TEXT NOT NULL,
-    substate              TEXT,
-    phase                 TEXT,
-    previous_state        TEXT,
-    previous_substate     TEXT,
-    return_state          TEXT,
-    return_phase          TEXT,
-    pending_upstream_stage TEXT,
-    question_source_state TEXT,
-    question_source_phase TEXT,
-    resume_role           TEXT,
-    review_phase          TEXT,
-    review_retry          INTEGER NOT NULL DEFAULT 0,
-    last_event            TEXT,
-    active_role           TEXT,
-    active_worker         TEXT,
-    checkpoint_commit     TEXT,
-    state_retry           INTEGER NOT NULL DEFAULT 0,
-    repeat                INTEGER NOT NULL DEFAULT 0,
-    last_transition_key   TEXT,
-    upstream_rework       INTEGER NOT NULL DEFAULT 0,
-    transition_count      INTEGER NOT NULL DEFAULT 0,
-    status                TEXT NOT NULL,
-    started_at            TEXT NOT NULL,
-    updated_at            TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS transitions (
-    id                INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp         TEXT NOT NULL,
-    run_id            TEXT NOT NULL,
-    state             TEXT NOT NULL,
-    substate          TEXT,
-    phase             TEXT,
-    from_state        TEXT NOT NULL,
-    from_substate     TEXT,
-    event             TEXT NOT NULL,
-    to_state          TEXT NOT NULL,
-    to_substate       TEXT,
-    to_phase          TEXT,
-    role              TEXT,
-    worker            TEXT,
-    reason            TEXT,
-    state_retry       INTEGER NOT NULL DEFAULT 0,
-    review_retry      INTEGER NOT NULL DEFAULT 0,
-    repeat            INTEGER NOT NULL DEFAULT 0,
-    checkpoint_commit TEXT,
-    FOREIGN KEY (run_id) REFERENCES runs (run_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_transitions_run ON transitions (run_id, id);
-
-CREATE TABLE IF NOT EXISTS artifacts (
-    run_id     TEXT NOT NULL,
-    kind       TEXT NOT NULL,
-    status     TEXT NOT NULL,
-    path       TEXT,
-    reason     TEXT,
-    updated_at TEXT NOT NULL,
-    PRIMARY KEY (run_id, kind),
-    FOREIGN KEY (run_id) REFERENCES runs (run_id)
-);
-
-CREATE TABLE IF NOT EXISTS fingerprints (
-    run_id      TEXT NOT NULL,
-    fingerprint TEXT NOT NULL,
-    occurrences INTEGER NOT NULL DEFAULT 0,
-    workers     TEXT NOT NULL DEFAULT '',
-    reason      TEXT,
-    first_seen  TEXT NOT NULL,
-    last_seen   TEXT NOT NULL,
-    PRIMARY KEY (run_id, fingerprint),
-    FOREIGN KEY (run_id) REFERENCES runs (run_id)
-);
-"""
 
 _RUN_COLUMNS = (
     "run_id",
@@ -183,8 +105,7 @@ class Store:
         self._conn = sqlite3.connect(self.path)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
-        self._conn.executescript(SCHEMA)
-        self._conn.commit()
+        self.schema_version = migrate(self._conn, self.path)
 
     # -- lifecycle -----------------------------------------------------------
 
