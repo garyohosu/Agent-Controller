@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
 import tempfile
 from collections.abc import Callable, Sequence
@@ -51,9 +52,21 @@ CommandRunner = Callable[[Sequence[str], str, int, str], CommandResult]
 """argv, cwd, timeout 秒, 標準入力 -> 結果。テストではここを差し替える。"""
 
 
+def resolve_executable(name: str) -> str:
+    """PATH から実行ファイルを解決する。
+
+    Windows では npm 由来の CLI が `codex`（sh スクリプト）と `codex.cmd`
+    （ランチャ）の両方で置かれる。CreateProcess は PATHEXT を見ないので、
+    素の名前のまま渡すと起動できない。shutil.which は PATHEXT を見る。
+    """
+    found = shutil.which(name)
+    return found if found is not None else name
+
+
 def run_command(
     argv: Sequence[str], cwd: str, timeout: int, stdin_text: str
 ) -> CommandResult:
+    argv = [resolve_executable(argv[0]), *argv[1:]]
     try:
         completed = subprocess.run(
             list(argv),

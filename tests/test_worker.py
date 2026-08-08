@@ -19,6 +19,7 @@ from agent_controller.cli_worker import (
     build_prompt,
     extract_json,
     looks_like_a_resource_limit,
+    resolve_executable,
     result_from_output,
 )
 from agent_controller.document_stage import (
@@ -337,6 +338,23 @@ class TestCommands:
     def test_claude_envelope_without_result_falls_back_to_stdout(self) -> None:
         worker = ClaudeCodeWorker(runner=fake_runner('{"event": "DONE"}'))
         assert worker.run(make_request()).event == Event.DONE
+
+
+class TestExecutableResolution:
+    def test_resolves_through_pathext(self) -> None:
+        """Windows では npm 由来の CLI が codex と codex.cmd の両方で置かれる。
+
+        CreateProcess は PATHEXT を見ないので、素の名前のままだと起動できない。
+        実際にこれで最初の smoke run が exit -1 になった。
+        """
+        resolved = resolve_executable("python")
+        assert Path(resolved).name.lower().startswith("python")
+        assert Path(resolved).is_absolute()
+
+    def test_unknown_command_is_left_alone(self) -> None:
+        assert resolve_executable("definitely-not-installed-xyz") == (
+            "definitely-not-installed-xyz"
+        )
 
 
 class TestPrompt:
