@@ -220,6 +220,14 @@ class Worker(StrEnum):
     ANTIGRAVITY = "ANTIGRAVITY"
     GROK = "GROK"
 
+    HUMAN = "HUMAN"
+    """最後の回答者。AI Worker ではない。
+
+    どの成果物からも答えが出ない質問に人間が答えたことを記録するためだけに使う。
+    active_worker にはならないし、指摘を出すこともないので、
+    「Worker を替えても同じ失敗」の判定には数えない。
+    """
+
 
 class RunStatus(StrEnum):
     """run 全体の状態（指示書 §21 の status）。"""

@@ -176,6 +176,53 @@ class DesignProgressError(RuntimeError):
     """DESIGN のループが進まなくなった。"""
 
 
+def _apply_upstream_change(
+    logger: TransitionLogger,
+    run: RunState,
+    stages: list[DocumentStageConfig],
+    analyzer: ImpactAnalyzer,
+    guard: LoopGuard,
+    target: DocumentStage,
+) -> str | None:
+    """上位変更の要求を影響範囲分析にかけて適用する。
+
+    要求元は Reviewer でも人間でも同じ扱いにする。どちらも「どの工程が変わるか」を
+    構造化して渡してくるので、Controller の仕事は検証と適用だけで変わらない。
+
+    続行できるなら次の工程に書く理由を返す。止めるなら None を返す。
+    """
+    run.upstream_rework += 1
+    verdict = check_counters(run, guard.limits)
+    if verdict is not None:
+        logger.record(
+            run, verdict.event, to_substate=run.substate, reason=verdict.reason
+        )
+        return None
+
+    statuses = logger.store.artifacts(run.run_id)
+    proposal = analyzer(run, target, stages, statuses)
+    violations = validate_impact_result(proposal, stages, expected_cause=target)
+    if violations:
+        logger.record(
+            run,
+            Event.INVALID_IMPACT_RESULT,
+            to_substate=run.substate,
+            reason="; ".join(violations),
+        )
+        return None
+
+    merged = merge_impacts(
+        design_artifact_statuses(logger, run, stages), proposal, stages
+    )
+    for stage, status in merged.items():
+        _mark(logger, run, stage, status, proposal.reason)
+
+    run.pending_upstream_stage = None
+    logger.store.save_run(run)
+    # §6「影響分析結果と再開理由は必ずログへ残す」。
+    return f"impact: {proposal.summary()} | {proposal.reason}"
+
+
 def run_design(
     run: RunState,
     logger: TransitionLogger,
@@ -203,6 +250,15 @@ def run_design(
     analyzer = analyzer if analyzer is not None else default_impact_analyzer
     qanda = qanda if qanda is not None else QandaFile(logger.store, workspace)
     entry_reason: str | None = None
+
+    # 人間の回答が上位変更を要求していた場合、ここで先に影響範囲を反映する。
+    # stage の離脱と同じ経路を通すので、扱いは AI が要求したときと変わらない。
+    if run.pending_upstream_stage is not None:
+        entry_reason = _apply_upstream_change(
+            logger, run, stages, analyzer, guard, run.pending_upstream_stage
+        )
+        if entry_reason is None:
+            return run
 
     while True:
         statuses = logger.store.artifacts(run.run_id)
@@ -246,41 +302,11 @@ def run_design(
                     f"{pending.name.value} escalated without naming an upstream stage"
                 )
 
-            run.upstream_rework += 1
-            verdict = check_counters(run, guard.limits)
-            if verdict is not None:
-                logger.record(
-                    run,
-                    verdict.event,
-                    to_substate=run.substate,
-                    reason=verdict.reason,
-                )
-                return run
-
-            # AI が影響範囲を提案し、Controller は依存グラフの制約に照らして検証する。
-            # 通れば適用し、破っていれば適用せず人間へ渡す。
-            proposal = analyzer(run, target, stages, statuses)
-            violations = validate_impact_result(proposal, stages, expected_cause=target)
-            if violations:
-                logger.record(
-                    run,
-                    Event.INVALID_IMPACT_RESULT,
-                    to_substate=run.substate,
-                    reason="; ".join(violations),
-                )
-                return run
-
-            merged = merge_impacts(
-                design_artifact_statuses(logger, run, stages), proposal, stages
+            entry_reason = _apply_upstream_change(
+                logger, run, stages, analyzer, guard, target
             )
-            for stage, status in merged.items():
-                _mark(logger, run, stage, status, proposal.reason)
-
-            # §6「影響分析結果と再開理由は必ずログへ残す」。
-            # 次の工程に入る行の理由として出す。
-            entry_reason = f"impact: {proposal.summary()} | {proposal.reason}"
-            run.pending_upstream_stage = None
-            logger.store.save_run(run)
+            if entry_reason is None:
+                return run
             continue
 
         raise DesignProgressError(

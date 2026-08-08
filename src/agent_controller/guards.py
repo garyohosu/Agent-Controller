@@ -218,11 +218,12 @@ class NoProgressTracker:
         fingerprint = failure_fingerprint(
             state, substate, phase, event, reason, finding_code, finding_subject
         )
+        # 人間は指摘を出さないので、「Worker を替えても同じ失敗」の判定に混ぜない。
+        tracked_worker = (
+            worker.value if worker is not None and worker != Worker.HUMAN else None
+        )
         occurrences, workers = self.store.observe_fingerprint(
-            run.run_id,
-            fingerprint,
-            worker=worker.value if worker is not None else None,
-            reason=reason,
+            run.run_id, fingerprint, worker=tracked_worker, reason=reason
         )
 
         # どの失敗が繰り返されたのかログから分かるようにする。歯止めの行は

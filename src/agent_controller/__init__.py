@@ -21,6 +21,11 @@ from agent_controller.guards import (
     check_counters,
     failure_fingerprint,
 )
+from agent_controller.human import (
+    AnswerRejected,
+    answer_question,
+    complete_blockers,
+)
 from agent_controller.impact import (
     ImpactAnalyzer,
     ImpactResult,
@@ -69,6 +74,7 @@ __all__ = [
     "STAGE_TRANSITIONS",
     "LATEST_VERSION",
     "TRANSITIONS",
+    "AnswerRejected",
     "ArtifactKind",
     "ArtifactState",
     "ArtifactStatus",
@@ -100,7 +106,9 @@ __all__ = [
     "WorkerRequest",
     "WorkerResult",
     "allowed_events",
+    "answer_question",
     "check_counters",
+    "complete_blockers",
     "default_design_stages",
     "default_impact_analyzer",
     "design_artifact_statuses",

@@ -9,6 +9,9 @@ dependencies = [
     "pydantic",
 ]
 
+[project.scripts]
+agent-controller = "agent_controller.cli:main"
+
 [dependency-groups]
 dev = [
     "pytest",
