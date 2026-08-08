@@ -21,6 +21,8 @@ from agent_controller.migrations import migrate
 from agent_controller.models import (
     ArtifactKind,
     ArtifactState,
+    Question,
+    QuestionStatus,
     RunState,
     Transition,
     utcnow,
@@ -76,6 +78,27 @@ _TRANSITION_COLUMNS = (
     "review_retry",
     "repeat",
     "checkpoint_commit",
+)
+
+
+_QUESTION_COLUMNS = (
+    "question_id",
+    "run_id",
+    "status",
+    "question",
+    "context",
+    "answer",
+    "answered_by",
+    "related_artifacts",
+    "asked_role",
+    "asked_worker",
+    "source_state",
+    "source_stage",
+    "source_phase",
+    "return_state",
+    "return_phase",
+    "created_at",
+    "updated_at",
 )
 
 
@@ -195,6 +218,50 @@ class Store:
                     artifact.updated_at.isoformat(),
                 ),
             )
+
+    # -- questions -----------------------------------------------------------
+
+    def next_question_id(self, run_id: str) -> str:
+        """Q-0001 形式の連番。QandA.md と Worker への指示に出るので読める形にする。"""
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM questions WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        return f"Q-{int(row[0]) + 1:04d}"
+
+    def save_question(self, question: Question) -> None:
+        question.updated_at = utcnow()
+        with self.transaction() as conn:
+            conn.execute(
+                f"INSERT OR REPLACE INTO questions ({', '.join(_QUESTION_COLUMNS)}) "
+                f"VALUES ({', '.join('?' for _ in _QUESTION_COLUMNS)})",
+                tuple(
+                    ",".join(question.related_artifacts)
+                    if name == "related_artifacts"
+                    else _encode(getattr(question, name))
+                    for name in _QUESTION_COLUMNS
+                ),
+            )
+
+    def _question_from(self, row: sqlite3.Row) -> Question:
+        data = {key: row[key] for key in row.keys()}
+        data["related_artifacts"] = [
+            item for item in str(data["related_artifacts"] or "").split(",") if item
+        ]
+        return Question.model_validate(data)
+
+    def questions(self, run_id: str) -> list[Question]:
+        rows = self._conn.execute(
+            "SELECT * FROM questions WHERE run_id = ? ORDER BY question_id", (run_id,)
+        ).fetchall()
+        return [self._question_from(row) for row in rows]
+
+    def open_questions(self, run_id: str) -> list[Question]:
+        """未解決の質問。§15 の COMPLETE 条件「QandA OPEN = 0」に使う。"""
+        rows = self._conn.execute(
+            "SELECT * FROM questions WHERE run_id = ? AND status = ? ORDER BY question_id",
+            (run_id, QuestionStatus.OPEN.value),
+        ).fetchall()
+        return [self._question_from(row) for row in rows]
 
     # -- fingerprints --------------------------------------------------------
 

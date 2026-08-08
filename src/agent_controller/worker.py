@@ -31,11 +31,13 @@ from agent_controller.models import (
     DocumentStage,
     Event,
     Phase,
+    Question,
     Role,
     RunState,
     State,
     Worker,
 )
+from agent_controller.qanda import QANDA_FILENAME, QandaFile
 
 PHASE_ROLES: dict[Phase, Role] = {
     Phase.GENERATE: Role.IMPLEMENTER,
@@ -69,6 +71,13 @@ class WorkerOutput(BaseModel):
     """指摘の対象。OrderService / tests/test_order.py::test_cancel など。"""
 
     finding_category: str | None = None
+
+    question: str | None = None
+    """QUESTION のとき、何が判断できないのか（§9）。"""
+
+    answer: str | None = None
+    """QANDA で回答したとき、その答え（§9）。"""
+
     upstream_target: str | None = None
     files_changed: list[str] = Field(default_factory=list)
 
@@ -116,6 +125,9 @@ class WorkerResult(BaseModel):
     finding_code: str | None = None
     finding_subject: str | None = None
     finding_category: str | None = None
+
+    question: str | None = None
+    answer: str | None = None
 
     files_changed: list[str] = Field(default_factory=list)
     """Worker の自己申告。実際に変わったかは検証していない（§17-14 の Git 連携まで）。"""
@@ -187,6 +199,8 @@ def stage_result_from(result: WorkerResult, worker: Worker, role: Role) -> Stage
         finding_code=result.finding_code,
         finding_subject=result.finding_subject,
         finding_category=result.finding_category,
+        question=result.question,
+        answer=result.answer,
     )
 
 
@@ -243,13 +257,33 @@ PHASE_DIRECTIVES: dict[Phase, str] = {
         "requested change is ambiguous."
     ),
     Phase.QANDA: (
-        "Answer the open question using only the existing documents. "
-        "Return DONE with the answer in reason if the documents settle it, "
-        "LOCAL_FIX if answering it requires changing the output document, or "
+        "Answer the open question in QandA.md using only the existing documents. "
+        "Return DONE with the decision in `answer` if the documents settle it, "
+        "LOCAL_FIX if answering it also requires changing the output document, or "
         "CANNOT_ANSWER if no document settles it and answering would be a guess."
     ),
 }
 """phase ごとの既定の指示。§17-13 で Director がこれを差し替える。"""
+
+
+def qanda_directive(base: str, question: Question | None) -> str:
+    """QANDA の指示は、その時点で開いている質問から組み立てる。
+
+    ここが「指示が固定文でなくなる」最初の場所で、§17-13 の Director の芽になる。
+    今は Controller が質問 1 件をそのまま渡すだけ。
+    """
+    if question is None:
+        return base
+    lines = [
+        base,
+        "",
+        f"The open question is {question.question_id}, raised at {question.position()}:",
+        "",
+        question.question,
+    ]
+    if question.context:
+        lines += ["", "Context given by the asker:", "", question.context]
+    return "\n".join(lines)
 
 
 def phase_handlers_from_worker(
@@ -259,6 +293,7 @@ def phase_handlers_from_worker(
     output_artifact: str,
     allowed_events: dict[Phase, list[Event]] | None = None,
     directives: dict[Phase, str] | None = None,
+    qanda: QandaFile | None = None,
 ) -> dict[Phase, PhaseHandler]:
     """Worker を Document Stage の phase handler に変換する。
 
@@ -280,14 +315,20 @@ def phase_handlers_from_worker(
         )
 
         def handler(run: RunState) -> StageResult:
+            directive = directives[phase]
+            documents = list(input_artifacts)
+            if phase == Phase.QANDA and qanda is not None:
+                directive = qanda_directive(directive, qanda.oldest_open(run.run_id))
+                documents = [*documents, QANDA_FILENAME]
+
             request = build_request(
                 run,
                 phase,
                 role,
                 workspace,
-                input_artifacts,
+                documents,
                 output_artifact,
-                directives[phase],
+                directive,
                 permitted,
                 expected_output_schema=WORKER_OUTPUT_SCHEMA,
             )

@@ -113,8 +113,36 @@ _V1_STATEMENTS = [
     """,
 ]
 
+_V2_STATEMENTS = [
+    """
+    CREATE TABLE questions (
+        question_id       TEXT NOT NULL,
+        run_id            TEXT NOT NULL,
+        status            TEXT NOT NULL,
+        question          TEXT NOT NULL,
+        context           TEXT,
+        answer            TEXT,
+        answered_by       TEXT,
+        related_artifacts TEXT NOT NULL DEFAULT '',
+        asked_role        TEXT,
+        asked_worker      TEXT,
+        source_state      TEXT NOT NULL,
+        source_stage      TEXT,
+        source_phase      TEXT,
+        return_state      TEXT,
+        return_phase      TEXT,
+        created_at        TEXT NOT NULL,
+        updated_at        TEXT NOT NULL,
+        PRIMARY KEY (run_id, question_id),
+        FOREIGN KEY (run_id) REFERENCES runs (run_id)
+    )
+    """,
+    "CREATE INDEX idx_questions_open ON questions (run_id, status)",
+]
+
 MIGRATIONS: list[Migration] = [
     Migration(version=1, name="baseline", statements=_V1_STATEMENTS),
+    Migration(version=2, name="questions", statements=_V2_STATEMENTS),
 ]
 
 LATEST_VERSION = max(migration.version for migration in MIGRATIONS)

@@ -183,6 +183,9 @@ def describe_finding(
     if finding_code:
         subject = f" on {finding_subject}" if finding_subject else ""
         return f"{finding_code}{subject} ({event.value} at {where})"
+    if finding_subject:
+        # code は無いが対象は分かる場合（同じ質問の繰り返しなど）。
+        return f"{event.value} at {where}: {finding_subject}"
     return f"{event.value} at {where}"
 
 

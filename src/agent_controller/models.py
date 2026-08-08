@@ -390,6 +390,61 @@ def transition_key(
     return f"{origin}|{event.value}|{target}"
 
 
+class QuestionStatus(StrEnum):
+    """QandA.md の 1 件の状態（指示書 §9）。"""
+
+    OPEN = "OPEN"
+    ANSWERED = "ANSWERED"
+    HUMAN_REQUIRED = "HUMAN_REQUIRED"
+
+
+class Question(BaseModel):
+    """Agent 間の問い合わせ 1 件（指示書 §9）。
+
+    制御に必要な情報は SQLite に持ち、QandA.md はここから生成する。
+    Markdown を状態にしない。§10 で遷移ログをそうしたのと同じ扱い。
+    """
+
+    question_id: str
+    """Q-0001 形式。QandA.md と Worker への指示に出るので、読める ID にする。"""
+
+    run_id: str
+    status: QuestionStatus = QuestionStatus.OPEN
+
+    question: str
+    context: str | None = None
+    """なぜ答えられないのか（§9 の Reason / Context）。"""
+
+    answer: str | None = None
+    answered_by: Worker | None = None
+    related_artifacts: list[str] = Field(default_factory=list)
+
+    asked_role: Role | None = None
+    asked_worker: Worker | None = None
+
+    source_state: State
+    source_stage: DocumentStage | None = None
+    source_phase: Phase | None = None
+
+    return_state: State | None = None
+    return_phase: Phase | None = None
+    """回答後に戻る場所。質問した時点の位置を控えておく。"""
+
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+    def position(self) -> str:
+        return "/".join(
+            part
+            for part in (
+                self.source_state.value,
+                self.source_stage.value if self.source_stage is not None else None,
+                self.source_phase.value if self.source_phase is not None else None,
+            )
+            if part is not None
+        )
+
+
 class ArtifactState(BaseModel):
     """成果物 1 件の影響分析結果（指示書 §6）。"""
 

@@ -169,8 +169,8 @@ def build_prompt(request: WorkerRequest) -> str:
         "",
         "```json",
         '{"event": "...", "reason": "...", "finding_code": null, '
-        '"finding_subject": null, "finding_category": null, '
-        '"upstream_target": null, "files_changed": []}',
+        '"finding_subject": null, "finding_category": null, "question": null, '
+        '"answer": null, "upstream_target": null, "files_changed": []}',
         "```",
         "",
         f"`event` must be exactly one of: {allowed}",
@@ -190,6 +190,10 @@ def build_prompt(request: WorkerRequest) -> str:
         "",
         "These two fields are how the controller detects that a problem is not getting "
         "fixed. Wording them consistently matters more than wording them well.",
+        "",
+        "`question` is required for QUESTION: state exactly what you cannot decide.",
+        "`answer` is required when you answer a question: state the decision and which "
+        "document settles it.",
     ]
     return "\n".join(lines)
 
@@ -232,6 +236,8 @@ def result_from_output(text: str, raw: str) -> WorkerResult:
         finding_code=field("finding_code"),
         finding_subject=field("finding_subject"),
         finding_category=field("finding_category"),
+        question=field("question"),
+        answer=field("answer"),
         files_changed=[str(item) for item in payload.get("files_changed") or []],
         raw_output=raw,
     )

@@ -26,8 +26,8 @@ from agent_controller.models import RunState, State
 from agent_controller.store import Store
 
 # 本物の履歴は汚さず、runner だけを試すための架空の v2。
-SYNTHETIC_V2 = Migration(
-    version=2,
+SYNTHETIC_NEXT = Migration(
+    version=99,
     name="synthetic-test-only",
     statements=["ALTER TABLE runs ADD COLUMN operator TEXT"],
 )
@@ -76,9 +76,9 @@ class TestRunner:
             store.save_run(RunState(project_id="p", run_id="kept", current_state=State.TEST))
 
         conn = sqlite3.connect(db)
-        version = migrate(conn, str(db), [*MIGRATIONS, SYNTHETIC_V2])
-        assert version == 2
-        assert current_version(conn) == 2
+        version = migrate(conn, str(db), [*MIGRATIONS, SYNTHETIC_NEXT])
+        assert version == SYNTHETIC_NEXT.version
+        assert current_version(conn) == SYNTHETIC_NEXT.version
 
         row = conn.execute(
             "SELECT current_state, operator FROM runs WHERE run_id = ?", ("kept",)
@@ -94,12 +94,15 @@ class TestRunner:
             pass
 
         conn = sqlite3.connect(db)
-        migrate(conn, str(db), [*MIGRATIONS, SYNTHETIC_V2])
-        migrate(conn, str(db), [*MIGRATIONS, SYNTHETIC_V2])
+        migrate(conn, str(db), [*MIGRATIONS, SYNTHETIC_NEXT])
+        migrate(conn, str(db), [*MIGRATIONS, SYNTHETIC_NEXT])
         history = applied_versions(conn)
         conn.close()
 
-        assert [version for version, _ in history] == [1, 2]
+        assert [version for version, _ in history] == [
+            *(m.version for m in MIGRATIONS),
+            SYNTHETIC_NEXT.version,
+        ]
 
     def test_a_failing_migration_leaves_no_version_row(self, tmp_path: Path) -> None:
         """中途半端に適用された状態を残さない。"""
@@ -108,7 +111,7 @@ class TestRunner:
             pass
 
         broken = Migration(
-            version=2,
+            version=99,
             name="broken",
             statements=[
                 "ALTER TABLE runs ADD COLUMN half_applied TEXT",
@@ -120,7 +123,7 @@ class TestRunner:
         with pytest.raises(sqlite3.OperationalError):
             migrate(conn, str(db), [*MIGRATIONS, broken])
 
-        assert current_version(conn) == 1
+        assert current_version(conn) == LATEST_VERSION
         columns = {row[1] for row in conn.execute("PRAGMA table_info(runs)")}
         conn.close()
 
@@ -146,13 +149,13 @@ class TestRefusals:
         """古いコードで新しい DB を開いて壊さない。"""
         db = tmp_path / "controller.db"
         conn = sqlite3.connect(db)
-        migrate(conn, str(db), [*MIGRATIONS, SYNTHETIC_V2])
+        migrate(conn, str(db), [*MIGRATIONS, SYNTHETIC_NEXT])
 
         with pytest.raises(FutureSchemaError) as error:
             migrate(conn, str(db), MIGRATIONS)
         conn.close()
 
-        assert "version 2" in str(error.value)
+        assert f"version {SYNTHETIC_NEXT.version}" in str(error.value)
 
     def test_store_surfaces_the_refusal(self, tmp_path: Path) -> None:
         db = tmp_path / "legacy.db"

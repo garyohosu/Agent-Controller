@@ -37,6 +37,8 @@ from agent_controller.models import (
     DocumentStage,
     Event,
     Phase,
+    Question,
+    QuestionStatus,
     ReviewLevel,
     Role,
     RunState,
@@ -45,6 +47,7 @@ from agent_controller.models import (
     Transition,
     Worker,
 )
+from agent_controller.qanda import QandaFile, render_qanda
 from agent_controller.transitions import (
     RESUME,
     TRANSITIONS,
@@ -81,6 +84,9 @@ __all__ = [
     "LoopGuard",
     "MissingReturnStateError",
     "Phase",
+    "QandaFile",
+    "Question",
+    "QuestionStatus",
     "ReviewLevel",
     "Role",
     "RunState",
@@ -104,6 +110,7 @@ __all__ = [
     "next_phase",
     "next_state",
     "phase_handlers_from_worker",
+    "render_qanda",
     "run_design",
     "run_document_stage",
     "stage_completed",

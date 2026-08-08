@@ -42,6 +42,7 @@ from agent_controller.models import (
     utcnow,
 )
 from agent_controller.guards import LoopGuard, apply_guard
+from agent_controller.qanda import QandaFile
 from agent_controller.transition_log import TransitionLogger
 
 EXIT: Final = "EXIT"
@@ -162,6 +163,12 @@ class StageResult(BaseModel):
 
     finding_category: str | None = None
     """分類（DESIGN_CONSISTENCY など）。指紋には使わず、人間向けの手がかり。"""
+
+    question: str | None = None
+    """QUESTION のとき、何が判断できないのか（§9）。無ければ reason で代用する。"""
+
+    answer: str | None = None
+    """QANDA で回答したとき、その答え（§9）。無ければ reason で代用する。"""
 
 
 PhaseHandler = Callable[[RunState], StageResult]
@@ -395,6 +402,7 @@ def _make_phase_node(
     logger: TransitionLogger,
     handlers: dict[Phase, PhaseHandler],
     guard: LoopGuard | None,
+    qanda: QandaFile | None,
 ) -> Callable[[RunState], dict[str, Any]]:
     def node(run: RunState) -> dict[str, Any]:
         state = run.current_state
@@ -402,6 +410,9 @@ def _make_phase_node(
         result = handlers[phase](run)
         event = result.event
         target = next_phase(phase, event)
+
+        if qanda is not None:
+            _update_questions(qanda, run, phase, result, config)
 
         # FIX からレビューへ戻るたびに数え、上限を超えたら RETRY_LIMIT で stage を抜ける。
         # 回数の超過だけを見る。同じ指摘の繰り返し（NO_PROGRESS）は §17-9。
@@ -454,11 +465,51 @@ def _make_phase_node(
             result.reason,
             transition.worker,
             result.finding_code,
-            result.finding_subject,
+            # 同じ質問を繰り返したら、既存の指紋がそれを数える
+            # （§11「同一 Q&A の再発検出」）。
+            result.finding_subject or (result.question if event == Event.QUESTION else None),
         )
         return run.model_dump()
 
     return node
+
+
+def _update_questions(
+    qanda: QandaFile,
+    run: RunState,
+    phase: Phase,
+    result: StageResult,
+    config: DocumentStageConfig,
+) -> None:
+    """質問の一生を進める。QandA.md はそのつど SQLite から書き直される。"""
+    if result.event == Event.QUESTION:
+        qanda.open_question(
+            run,
+            question=result.question or result.reason or "(no question text)",
+            context=result.reason if result.question else None,
+            asked_role=result.role,
+            asked_worker=result.worker,
+            related_artifacts=[*config.inputs, config.output],
+            return_phase=phase,
+        )
+        return
+
+    if phase != Phase.QANDA:
+        return
+
+    question = qanda.oldest_open(run.run_id)
+    if question is None:
+        return
+
+    if result.event == Event.CANNOT_ANSWER:
+        qanda.escalate_to_human(question, result.reason)
+    elif result.event in (Event.DONE, Event.LOCAL_FIX):
+        # LOCAL_FIX でも回答はできている。OPEN のままにしない。
+        qanda.answer(
+            question,
+            result.answer or result.reason or "(answered)",
+            answered_by=result.worker,
+        )
 
 
 def _route(run: RunState) -> str:
@@ -473,6 +524,7 @@ def build_document_stage(
     logger: TransitionLogger,
     handlers: dict[Phase, PhaseHandler] | None = None,
     guard: LoopGuard | None = None,
+    qanda: QandaFile | None = None,
 ) -> Any:
     """1 つの Document Stage の Subgraph を組んで compile する。"""
     handlers = handlers if handlers is not None else stub_phase_handlers()
@@ -483,7 +535,8 @@ def build_document_stage(
     builder = StateGraph(RunState)
     for phase in WORKING_PHASES:
         builder.add_node(
-            phase.value, _make_phase_node(phase, config, logger, handlers, guard)
+            phase.value,
+            _make_phase_node(phase, config, logger, handlers, guard, qanda),
         )
 
     destinations = {phase.value: phase.value for phase in WORKING_PHASES}
@@ -503,6 +556,7 @@ def run_document_stage(
     logger: TransitionLogger,
     handlers: dict[Phase, PhaseHandler] | None = None,
     guard: LoopGuard | None = None,
+    qanda: QandaFile | None = None,
     entry_phase: Phase = Phase.GENERATE,
     entry_reason: str | None = None,
     recursion_limit: int = 100,
@@ -515,7 +569,7 @@ def run_document_stage(
     if run.substate != config.name or run.phase is None:
         logger.persist(run, start_stage(run, config, entry_phase, entry_reason))
 
-    graph = build_document_stage(config, logger, handlers, guard)
+    graph = build_document_stage(config, logger, handlers, guard, qanda)
     result = graph.invoke(run, config={"recursion_limit": recursion_limit})
     return RunState.model_validate(result)
 

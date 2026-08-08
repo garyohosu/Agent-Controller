@@ -49,6 +49,7 @@ from agent_controller.models import (
     RunState,
     State,
 )
+from agent_controller.qanda import QandaFile
 from agent_controller.transition_log import TransitionLogger
 
 STAGE_OUTPUTS: dict[DocumentStage, str] = {
@@ -183,6 +184,7 @@ def run_design(
     guard: LoopGuard | None = None,
     analyzer: ImpactAnalyzer | None = None,
     workspace: str | Path | None = None,
+    qanda: QandaFile | None = None,
 ) -> RunState:
     """すべての設計成果物が VALID になるまで stage を回す。
 
@@ -199,6 +201,7 @@ def run_design(
     stages = stages if stages is not None else default_design_stages()
     guard = guard if guard is not None else LoopGuard(logger.store)
     analyzer = analyzer if analyzer is not None else default_impact_analyzer
+    qanda = qanda if qanda is not None else QandaFile(logger.store, workspace)
     entry_reason: str | None = None
 
     while True:
@@ -222,6 +225,7 @@ def run_design(
             logger,
             handlers,
             guard,
+            qanda,
             entry_phase=_entry_for(statuses, pending, workspace),
             entry_reason=entry_reason,
         )
