@@ -118,12 +118,12 @@ class TestApplyEvent:
         assert run.current_state == State.IMPLEMENT
         assert run.transition_count == 1
 
-    def test_retry_count_increments_on_self_loop_and_resets_on_move(self) -> None:
+    def test_state_retry_increments_on_self_loop_and_resets_on_move(self) -> None:
         run = make_run(current_state=State.DESIGN)
 
-        assert apply_event(run, Event.LOCAL_FIX).retry_count == 1
-        assert apply_event(run, Event.LOCAL_FIX).retry_count == 2
-        assert apply_event(run, Event.PASS).retry_count == 0
+        assert apply_event(run, Event.LOCAL_FIX).state_retry == 1
+        assert apply_event(run, Event.LOCAL_FIX).state_retry == 2
+        assert apply_event(run, Event.PASS).state_retry == 0
         assert run.current_state == State.IMPLEMENT
 
     def test_status_tracks_state(self) -> None:

@@ -17,6 +17,7 @@ from typing import Final, Literal
 
 from agent_controller.models import (
     PAUSE_STATES,
+    SUSPENSION_EVENTS,
     DocumentStage,
     Event,
     Phase,
@@ -26,6 +27,7 @@ from agent_controller.models import (
     State,
     Transition,
     Worker,
+    transition_key,
     utcnow,
 )
 
@@ -188,14 +190,16 @@ def apply_event(
 
     run は破壊的に更新される。永続化は行わない（transition_log.py の責務）。
 
-    retry_count は自己ループで増え、State が変わるとリセットされる。
-    ここでは数えるだけで上限判定はしない（loop guard は §17-9）。
+    ここでは数えるだけで、上限判定はしない。判定は guards.py が行う。
     """
     from_state = run.current_state
     from_substate = run.substate
     from_phase = run.phase
 
     target = next_state(from_state, event, run.return_state)
+    key = transition_key(
+        from_state, from_substate, from_phase, event, target, to_substate, to_phase
+    )
 
     run.previous_state = from_state
     run.previous_substate = from_substate
@@ -204,9 +208,17 @@ def apply_event(
     run.phase = to_phase
     run.last_event = event
     run.transition_count += 1
-    run.retry_count = run.retry_count + 1 if target == from_state else 0
     run.status = _status_for(target)
     run.updated_at = utcnow()
+
+    if event in SUSPENSION_EVENTS:
+        # 中断と復帰はループの証拠にしない。カウンタには触れず、
+        # 直前の遷移も上書きしない（中断を挟んだ反復を見失わないため）。
+        pass
+    else:
+        run.state_retry = run.state_retry + 1 if target == from_state else 0
+        run.repeat = run.repeat + 1 if key == run.last_transition_key else 0
+        run.last_transition_key = key
 
     if role is not None:
         run.active_role = role
@@ -233,6 +245,8 @@ def apply_event(
         role=role if role is not None else run.active_role,
         worker=worker if worker is not None else run.active_worker,
         reason=reason,
-        retry_count=run.retry_count,
+        state_retry=run.state_retry,
+        review_retry=run.review_retry,
+        repeat=run.repeat,
         checkpoint_commit=run.checkpoint_commit,
     )

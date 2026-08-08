@@ -38,8 +38,10 @@ from agent_controller.models import (
     RunState,
     Transition,
     Worker,
+    transition_key,
     utcnow,
 )
+from agent_controller.guards import LoopGuard, apply_guard
 from agent_controller.transition_log import TransitionLogger
 
 EXIT: Final = "EXIT"
@@ -190,7 +192,7 @@ def start_stage(run: RunState, config: DocumentStageConfig) -> Transition:
     """stage の開始位置に run を置き、その記録を返す。
 
     return_phase が残っていれば、その phase から再開する。中断前の review 強度と
-    review_retry_count は捨てない。捨てると、resource limit を挟むだけで
+    review_retry は捨てない。捨てると、resource limit を挟むだけで
     RETRY_LIMIT を回避できてしまう。
     """
     from_substate = run.substate
@@ -203,11 +205,15 @@ def start_stage(run: RunState, config: DocumentStageConfig) -> Transition:
     else:
         run.phase = Phase.GENERATE
         run.review_phase = config.review_level.phase
-        run.review_retry_count = 0
+        run.review_retry = 0
         run.question_source_phase = None
 
     run.return_phase = None
     run.transition_count += 1
+    # stage をまたいで repeat が繋がらないようにする。stage の再実行そのものは
+    # upstream_rework が数える。
+    run.last_transition_key = None
+    run.repeat = 0
     run.updated_at = utcnow()
 
     return Transition(
@@ -224,7 +230,9 @@ def start_stage(run: RunState, config: DocumentStageConfig) -> Transition:
         role=run.active_role,
         worker=run.active_worker,
         reason="resume" if resuming else None,
-        retry_count=run.review_retry_count,
+        state_retry=run.state_retry,
+        review_retry=run.review_retry,
+        repeat=run.repeat,
         checkpoint_commit=run.checkpoint_commit,
     )
 
@@ -267,6 +275,18 @@ def apply_stage_event(
     elif from_phase == Phase.QANDA:
         run.question_source_phase = None
 
+    key = transition_key(
+        run.current_state,
+        run.substate,
+        from_phase,
+        event,
+        run.current_state,
+        run.substate,
+        to_phase,
+    )
+    run.repeat = run.repeat + 1 if key == run.last_transition_key else 0
+    run.last_transition_key = key
+
     run.phase = to_phase
     run.last_event = event
     run.transition_count += 1
@@ -291,7 +311,9 @@ def apply_stage_event(
         role=role if role is not None else run.active_role,
         worker=worker if worker is not None else run.active_worker,
         reason=reason,
-        retry_count=run.review_retry_count,
+        state_retry=run.state_retry,
+        review_retry=run.review_retry,
+        repeat=run.repeat,
         checkpoint_commit=run.checkpoint_commit,
     )
 
@@ -348,8 +370,11 @@ def _make_phase_node(
     config: DocumentStageConfig,
     logger: TransitionLogger,
     handlers: dict[Phase, PhaseHandler],
+    guard: LoopGuard | None,
 ) -> Callable[[RunState], dict[str, Any]]:
     def node(run: RunState) -> dict[str, Any]:
+        state = run.current_state
+        substate = run.substate
         result = handlers[phase](run)
         event = result.event
         target = next_phase(phase, event)
@@ -357,8 +382,8 @@ def _make_phase_node(
         # FIX からレビューへ戻るたびに数え、上限を超えたら RETRY_LIMIT で stage を抜ける。
         # 回数の超過だけを見る。同じ指摘の繰り返し（NO_PROGRESS）は §17-9。
         if target == ENTER_REVIEW and phase == Phase.FIX:
-            run.review_retry_count += 1
-            if run.review_retry_count > config.max_review_retry:
+            run.review_retry += 1
+            if run.review_retry > config.max_review_retry:
                 event = Event.RETRY_LIMIT
                 target = EXIT
 
@@ -391,6 +416,20 @@ def _make_phase_node(
             reason=result.reason,
         )
         logger.persist(run, transition)
+
+        # 起きたことを記録してから歯止めを見る。順序を逆にすると、
+        # 実際に起きた遷移がログから消える。
+        apply_guard(
+            logger,
+            guard,
+            run,
+            event,
+            state,
+            substate,
+            phase,
+            result.reason,
+            transition.worker,
+        )
         return run.model_dump()
 
     return node
@@ -407,6 +446,7 @@ def build_document_stage(
     config: DocumentStageConfig,
     logger: TransitionLogger,
     handlers: dict[Phase, PhaseHandler] | None = None,
+    guard: LoopGuard | None = None,
 ) -> Any:
     """1 つの Document Stage の Subgraph を組んで compile する。"""
     handlers = handlers if handlers is not None else stub_phase_handlers()
@@ -416,7 +456,9 @@ def build_document_stage(
 
     builder = StateGraph(RunState)
     for phase in WORKING_PHASES:
-        builder.add_node(phase.value, _make_phase_node(phase, config, logger, handlers))
+        builder.add_node(
+            phase.value, _make_phase_node(phase, config, logger, handlers, guard)
+        )
 
     destinations = {phase.value: phase.value for phase in WORKING_PHASES}
     destinations[END] = END
@@ -434,6 +476,7 @@ def run_document_stage(
     config: DocumentStageConfig,
     logger: TransitionLogger,
     handlers: dict[Phase, PhaseHandler] | None = None,
+    guard: LoopGuard | None = None,
     recursion_limit: int = 100,
 ) -> RunState:
     """stage を COMPLETE か EXIT まで進める。
@@ -444,7 +487,7 @@ def run_document_stage(
     if run.substate != config.name or run.phase is None:
         logger.persist(run, start_stage(run, config))
 
-    graph = build_document_stage(config, logger, handlers)
+    graph = build_document_stage(config, logger, handlers, guard)
     result = graph.invoke(run, config={"recursion_limit": recursion_limit})
     return RunState.model_validate(result)
 

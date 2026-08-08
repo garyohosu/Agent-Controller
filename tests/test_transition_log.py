@@ -40,11 +40,12 @@ class TestFormatPosition:
 
 
 class TestRender:
-    def test_matches_the_instruction_example(self) -> None:
-        """指示書 §10 の表示例の形をそのまま再現できること。
+    def test_counters_go_on_their_own_line(self) -> None:
+        """意味の違うカウンタを 1 つの retry= に混ぜない。
 
-        §10 の例は phase を単に REVIEW と書いているが、§4 の FAST / DEEP PATH を
-        phase として表すために REVIEW_LIGHT / REVIEW_DEEP へ分けた。書式は同じ。
+        §10 の表示例は phase を REVIEW と書き、カウンタを retry= 1 つにまとめて
+        いるが、どちらも後の決定で置き換わっている（REVIEW_LIGHT / REVIEW_DEEP、
+        state_retry / review_retry / repeat）。
         """
         transition = Transition(
             timestamp=at(19, 10, 12),
@@ -59,13 +60,49 @@ class TestRender:
             to_substate=DocumentStage.CLASS,
             to_phase=Phase.FIX,
             worker=Worker.CODEX_CLI,
-            retry_count=1,
+            review_retry=1,
+            repeat=1,
         )
 
         assert render_transition(transition, UTC) == (
             "19:10:12 | DESIGN/CLASS/REVIEW_LIGHT | LOCAL_FIX\n"
-            "         -> DESIGN/CLASS/FIX | worker=CODEX_CLI | retry=1"
+            "         -> DESIGN/CLASS/FIX | worker=CODEX_CLI\n"
+            "         | review_retry=1 | repeat=1"
         )
+
+    def test_zero_counters_are_omitted(self) -> None:
+        """正常に進んでいる行は 2 行のまま。"""
+        transition = Transition(
+            timestamp=at(19, 10, 12),
+            run_id="run-1",
+            state=State.DESIGN,
+            substate=DocumentStage.SPEC,
+            phase=Phase.GENERATE,
+            from_state=State.DESIGN,
+            event=Event.DONE,
+            to_state=State.DESIGN,
+            to_substate=DocumentStage.SPEC,
+            to_phase=Phase.REVIEW_DEEP,
+        )
+
+        assert render_transition(transition, UTC).count("\n") == 1
+        assert "repeat" not in render_transition(transition, UTC)
+
+    def test_each_counter_is_named(self) -> None:
+        transition = Transition(
+            timestamp=at(19, 10, 12),
+            run_id="run-1",
+            state=State.DESIGN,
+            from_state=State.DESIGN,
+            event=Event.UPSTREAM_CHANGE_REQUIRED,
+            to_state=State.DESIGN,
+            state_retry=2,
+            review_retry=1,
+            repeat=3,
+        )
+
+        rendered = render_transition(transition, UTC)
+        assert "| state_retry=2 | review_retry=1 | repeat=3" in rendered
 
     def test_reason_is_shown_for_upstream_returns(self) -> None:
         transition = Transition(

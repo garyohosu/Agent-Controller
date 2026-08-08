@@ -32,7 +32,7 @@ class TestRuns:
             active_role=Role.REVIEWER,
             active_worker=Worker.CODEX_CLI,
             checkpoint_commit="deadbee",
-            retry_count=2,
+            state_retry=2,
             transition_count=7,
         )
         store.save_run(run)
@@ -44,7 +44,7 @@ class TestRuns:
         assert loaded.phase == Phase.REVIEW_LIGHT
         assert loaded.active_worker == Worker.CODEX_CLI
         assert loaded.checkpoint_commit == "deadbee"
-        assert loaded.retry_count == 2
+        assert loaded.state_retry == 2
         assert loaded.transition_count == 7
         assert loaded.status == RunStatus.RUNNING
 
@@ -106,7 +106,7 @@ class TestTransitions:
                 role=Role.REVIEWER,
                 worker=Worker.CODEX_CLI,
                 reason="naming mismatch",
-                retry_count=1,
+                state_retry=1,
                 checkpoint_commit="abc1234",
             )
         )
@@ -117,7 +117,7 @@ class TestTransitions:
         assert stored.to_phase == Phase.FIX
         assert stored.worker == Worker.CODEX_CLI
         assert stored.reason == "naming mismatch"
-        assert stored.retry_count == 1
+        assert stored.state_retry == 1
         assert stored.checkpoint_commit == "abc1234"
 
     def test_scoped_to_run(self, store: Store, run: RunState) -> None:

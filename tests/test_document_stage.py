@@ -175,7 +175,7 @@ class TestLocalFix:
             Phase.COMPLETE,
         ]
         assert final.current_state == State.DESIGN
-        assert final.review_retry_count == 1
+        assert final.review_retry == 1
 
     def test_toplevel_state_never_moves_during_the_loop(
         self, store: Store, logger: TransitionLogger, design_run: RunState
@@ -403,7 +403,7 @@ class TestRetryLimit:
         events = [item.event for item in logger.history(final.run_id)]
         assert events[-1] == Event.RETRY_LIMIT
         assert Event.NO_PROGRESS not in events
-        assert final.review_retry_count == CLASS_STAGE.max_review_retry + 1
+        assert final.review_retry == CLASS_STAGE.max_review_retry + 1
 
     def test_retry_limit_is_configurable_per_stage(
         self, logger: TransitionLogger, design_run: RunState
@@ -420,7 +420,7 @@ class TestRetryLimit:
         ).as_handlers()
 
         final = run_document_stage(design_run, patient, logger, handlers)
-        assert final.review_retry_count == 6
+        assert final.review_retry == 6
 
 
 class TestResume:
@@ -477,7 +477,7 @@ class TestResume:
             }
         ).as_handlers()
         stopped = run_document_stage(design_run, CLASS_STAGE, logger, stopping)
-        assert stopped.review_retry_count == 1
+        assert stopped.review_retry == 1
 
         logger.record(stopped, Event.RESOURCE_AVAILABLE, to_substate=DocumentStage.CLASS)
 
@@ -492,7 +492,7 @@ class TestResume:
 
         assert final.current_state == State.HUMAN_REQUIRED
         assert [item.event for item in logger.history(final.run_id)][-1] == Event.RETRY_LIMIT
-        assert final.review_retry_count == CLASS_STAGE.max_review_retry + 1
+        assert final.review_retry == CLASS_STAGE.max_review_retry + 1
 
     def test_run_already_inside_a_phase_is_not_restarted(
         self, store: Store, logger: TransitionLogger, design_run: RunState

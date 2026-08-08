@@ -256,7 +256,7 @@ class RunState(BaseModel):
     review_phase: Phase | None = None
     """現在の Document Stage で有効なレビュー強度。SERIOUS_ISSUE で LIGHT→DEEP に上がる。"""
 
-    review_retry_count: int = 0
+    review_retry: int = 0
     """現在の Document Stage で FIX からレビューへ戻った回数（§3 の max_review_retry 用）。"""
 
     last_event: Event | None = None
@@ -267,8 +267,20 @@ class RunState(BaseModel):
     checkpoint_commit: str | None = None
     """State 開始時に記録する commit SHA（指示書 §12）。rollback はこの SHA へ戻す。"""
 
-    retry_count: int = 0
+    state_retry: int = 0
+    """同じトップレベル State を続けて実行した回数。State が変わると 0 に戻る。"""
+
+    repeat: int = 0
+    """直前とまったく同じ遷移が続いた回数。初回は 0、2 回目で 1。"""
+
+    last_transition_key: str | None = None
+    """repeat を数えるための直前の遷移の指紋。stage が変わるとクリアする。"""
+
+    upstream_rework: int = 0
+    """この run で上位工程へ戻した回数（§11 の「同一理由による上位手戻り」用）。"""
+
     transition_count: int = 0
+    """この run の総遷移数。§11 の「1 run の最大 transition 数」に使う。"""
 
     status: RunStatus = RunStatus.RUNNING
 
@@ -308,7 +320,15 @@ class Transition(BaseModel):
     worker: Worker | None = None
     reason: str | None = None
 
-    retry_count: int = 0
+    state_retry: int = 0
+    review_retry: int = 0
+    repeat: int = 0
+    """§10 の retry_count を用途別に 3 つへ分けたもの。
+
+    1 つの数では「State を繰り返したのか」「レビューをやり直したのか」
+    「まったく同じ遷移が続いたのか」が区別できず、ログを読むときに意味が定まらない。
+    """
+
     checkpoint_commit: str | None = None
 
     @property
@@ -321,6 +341,35 @@ class Transition(BaseModel):
         が対称に見えるよう、別カラムを増やさず別名だけ用意する。
         """
         return self.phase
+
+
+SUSPENSION_EVENTS: frozenset[Event] = frozenset(
+    {Event.WORKER_RESOURCE_LIMIT, Event.RESOURCE_AVAILABLE, Event.HUMAN_ANSWER}
+)
+"""外部要因による中断と復帰。ループの証拠にはしない。
+
+rate limit を 3 回待っただけの run は、同じところを回っているわけではない。
+これらを数えると、辛抱強く待った run が LOOP_DETECTED で止まってしまう。
+"""
+
+
+def transition_key(
+    from_state: State,
+    from_substate: DocumentStage | None,
+    from_phase: Phase | None,
+    event: Event,
+    to_state: State,
+    to_substate: DocumentStage | None,
+    to_phase: Phase | None,
+) -> str:
+    """まったく同じ遷移かどうかを判定するための指紋。"""
+
+    def part(value: StrEnum | None) -> str:
+        return value.value if value is not None else "-"
+
+    origin = "/".join((part(from_state), part(from_substate), part(from_phase)))
+    target = "/".join((part(to_state), part(to_substate), part(to_phase)))
+    return f"{origin}|{event.value}|{target}"
 
 
 class ArtifactState(BaseModel):

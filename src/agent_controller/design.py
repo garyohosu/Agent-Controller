@@ -28,6 +28,7 @@ from agent_controller.document_stage import (
     run_document_stage,
     stage_completed,
 )
+from agent_controller.guards import LoopGuard, check_counters
 from agent_controller.models import (
     DEFAULT_REVIEW_LEVELS,
     DOCUMENT_STAGE_ORDER,
@@ -140,7 +141,7 @@ def run_design(
     logger: TransitionLogger,
     stages: list[DocumentStageConfig] | None = None,
     handlers: dict[Phase, PhaseHandler] | None = None,
-    max_upstream_returns: int = 3,
+    guard: LoopGuard | None = None,
 ) -> RunState:
     """すべての設計成果物が VALID になるまで stage を回す。
 
@@ -148,11 +149,11 @@ def run_design(
     途中で run が DESIGN の外へ出た場合（HUMAN_REQUIRED / WAIT_RESOURCE / ABORT）は
     そこで返す。呼び出し側が Worker を替えて run_design をもう一度呼べば続きから進む。
 
-    max_upstream_returns はこのループ専用の最低限の歯止め。
-    指示書 §11 の guard 一式（同一遷移の連続、fingerprint、1 run の上限）は §17-9。
+    上位手戻りの回数は guard が見る（GuardLimits.max_upstream_rework）。
+    guard を渡さなければ既定値の LoopGuard を使う。歯止め無しでは回さない。
     """
     stages = stages if stages is not None else default_design_stages()
-    upstream_returns = 0
+    guard = guard if guard is not None else LoopGuard(logger.store)
 
     while True:
         statuses = logger.store.artifacts(run.run_id)
@@ -169,7 +170,7 @@ def run_design(
             logger.record(run, Event.PASS, reason="all design artifacts valid")
             return run
 
-        run = run_document_stage(run, pending, logger, handlers)
+        run = run_document_stage(run, pending, logger, handlers, guard)
 
         if run.current_state != State.DESIGN:
             # HUMAN_REQUIRED / WAIT_RESOURCE / ABORT。stage の途中で止まっている。
@@ -186,13 +187,14 @@ def run_design(
                     f"{pending.name.value} escalated without naming an upstream stage"
                 )
 
-            upstream_returns += 1
-            if upstream_returns > max_upstream_returns:
+            run.upstream_rework += 1
+            verdict = check_counters(run, guard.limits)
+            if verdict is not None:
                 logger.record(
                     run,
-                    Event.LOOP_DETECTED,
+                    verdict.event,
                     to_substate=run.substate,
-                    reason=f"upstream returns exceeded {max_upstream_returns}",
+                    reason=verdict.reason,
                 )
                 return run
 

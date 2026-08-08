@@ -41,12 +41,15 @@ CREATE TABLE IF NOT EXISTS runs (
     question_source_phase TEXT,
     resume_role           TEXT,
     review_phase          TEXT,
-    review_retry_count    INTEGER NOT NULL DEFAULT 0,
+    review_retry          INTEGER NOT NULL DEFAULT 0,
     last_event            TEXT,
     active_role           TEXT,
     active_worker         TEXT,
     checkpoint_commit     TEXT,
-    retry_count           INTEGER NOT NULL DEFAULT 0,
+    state_retry           INTEGER NOT NULL DEFAULT 0,
+    repeat                INTEGER NOT NULL DEFAULT 0,
+    last_transition_key   TEXT,
+    upstream_rework       INTEGER NOT NULL DEFAULT 0,
     transition_count      INTEGER NOT NULL DEFAULT 0,
     status                TEXT NOT NULL,
     started_at            TEXT NOT NULL,
@@ -69,7 +72,9 @@ CREATE TABLE IF NOT EXISTS transitions (
     role              TEXT,
     worker            TEXT,
     reason            TEXT,
-    retry_count       INTEGER NOT NULL DEFAULT 0,
+    state_retry       INTEGER NOT NULL DEFAULT 0,
+    review_retry      INTEGER NOT NULL DEFAULT 0,
+    repeat            INTEGER NOT NULL DEFAULT 0,
     checkpoint_commit TEXT,
     FOREIGN KEY (run_id) REFERENCES runs (run_id)
 );
@@ -84,6 +89,18 @@ CREATE TABLE IF NOT EXISTS artifacts (
     reason     TEXT,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (run_id, kind),
+    FOREIGN KEY (run_id) REFERENCES runs (run_id)
+);
+
+CREATE TABLE IF NOT EXISTS fingerprints (
+    run_id      TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    occurrences INTEGER NOT NULL DEFAULT 0,
+    workers     TEXT NOT NULL DEFAULT '',
+    reason      TEXT,
+    first_seen  TEXT NOT NULL,
+    last_seen   TEXT NOT NULL,
+    PRIMARY KEY (run_id, fingerprint),
     FOREIGN KEY (run_id) REFERENCES runs (run_id)
 );
 """
@@ -103,12 +120,15 @@ _RUN_COLUMNS = (
     "question_source_phase",
     "resume_role",
     "review_phase",
-    "review_retry_count",
+    "review_retry",
     "last_event",
     "active_role",
     "active_worker",
     "checkpoint_commit",
-    "retry_count",
+    "state_retry",
+    "repeat",
+    "last_transition_key",
+    "upstream_rework",
     "transition_count",
     "status",
     "started_at",
@@ -130,7 +150,9 @@ _TRANSITION_COLUMNS = (
     "role",
     "worker",
     "reason",
-    "retry_count",
+    "state_retry",
+    "review_retry",
+    "repeat",
     "checkpoint_commit",
 )
 
@@ -252,6 +274,67 @@ class Store:
                     artifact.updated_at.isoformat(),
                 ),
             )
+
+    # -- fingerprints --------------------------------------------------------
+
+    def observe_fingerprint(
+        self,
+        run_id: str,
+        fingerprint: str,
+        worker: str | None = None,
+        reason: str | None = None,
+    ) -> tuple[int, set[str]]:
+        """同じ失敗の指紋を 1 件数え、(累計回数, これまでの Worker) を返す。
+
+        Worker を替えても同じ失敗が出るかを判定できるよう、指紋ごとに
+        担当した Worker を覚えておく（指示書 §11）。
+        """
+        now = utcnow().isoformat()
+        row = self._conn.execute(
+            "SELECT occurrences, workers FROM fingerprints WHERE run_id = ? AND fingerprint = ?",
+            (run_id, fingerprint),
+        ).fetchone()
+
+        workers = set(filter(None, row["workers"].split(","))) if row is not None else set()
+        if worker is not None:
+            workers.add(worker)
+        occurrences = (row["occurrences"] if row is not None else 0) + 1
+        joined = ",".join(sorted(workers))
+
+        with self.transaction() as conn:
+            if row is None:
+                conn.execute(
+                    """
+                    INSERT INTO fingerprints
+                        (run_id, fingerprint, occurrences, workers, reason, first_seen, last_seen)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (run_id, fingerprint, occurrences, joined, reason, now, now),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE fingerprints
+                       SET occurrences = ?, workers = ?, reason = ?, last_seen = ?
+                     WHERE run_id = ? AND fingerprint = ?
+                    """,
+                    (occurrences, joined, reason, now, run_id, fingerprint),
+                )
+
+        return occurrences, workers
+
+    def fingerprints(self, run_id: str) -> dict[str, tuple[int, set[str]]]:
+        rows = self._conn.execute(
+            "SELECT fingerprint, occurrences, workers FROM fingerprints WHERE run_id = ?",
+            (run_id,),
+        ).fetchall()
+        return {
+            row["fingerprint"]: (
+                row["occurrences"],
+                set(filter(None, row["workers"].split(","))),
+            )
+            for row in rows
+        }
 
     def artifacts(self, run_id: str) -> dict[ArtifactKind, ArtifactState]:
         rows = self._conn.execute(

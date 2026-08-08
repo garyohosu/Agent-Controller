@@ -53,21 +53,34 @@ def render_transition(transition: Transition, tz: tzinfo | None = None) -> str:
         transition.to_state, transition.to_substate, transition.to_phase
     )
 
-    head = f"{timestamp:%H:%M:%S} | {origin} | {transition.event.value}"
+    lines = [f"{timestamp:%H:%M:%S} | {origin} | {transition.event.value}"]
 
-    details: list[str] = [f"-> {target}"]
+    moved: list[str] = [f"-> {target}"]
     if transition.worker is not None:
-        details.append(f"worker={transition.worker.value}")
+        moved.append(f"worker={transition.worker.value}")
     if transition.role is not None:
-        details.append(f"role={transition.role.value}")
-    if transition.retry_count:
-        details.append(f"retry={transition.retry_count}")
+        moved.append(f"role={transition.role.value}")
     if transition.checkpoint_commit is not None:
-        details.append(f"checkpoint={transition.checkpoint_commit}")
+        moved.append(f"checkpoint={transition.checkpoint_commit}")
     if transition.reason is not None:
-        details.append(f"reason={transition.reason}")
+        moved.append(f"reason={transition.reason}")
+    lines.append(_INDENT + " | ".join(moved))
 
-    return f"{head}\n{_INDENT}{' | '.join(details)}"
+    # カウンタは意味が違うものを並べるので独立した行にする。
+    # 0 のものは出さない。正常に進んでいる行は 2 行のままになる。
+    counters = [
+        f"{name}={value}"
+        for name, value in (
+            ("state_retry", transition.state_retry),
+            ("review_retry", transition.review_retry),
+            ("repeat", transition.repeat),
+        )
+        if value
+    ]
+    if counters:
+        lines.append(_INDENT + "| " + " | ".join(counters))
+
+    return "\n".join(lines)
 
 
 def render_log(transitions: Iterable[Transition], tz: tzinfo | None = None) -> str:

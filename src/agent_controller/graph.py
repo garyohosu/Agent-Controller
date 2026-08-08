@@ -15,6 +15,7 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
 
+from agent_controller.guards import LoopGuard, apply_guard
 from agent_controller.models import Event, Role, RunState, State, Worker
 from agent_controller.transition_log import TransitionLogger
 
@@ -112,18 +113,28 @@ def _make_node(
     state: State,
     logger: TransitionLogger,
     handlers: dict[State, StageHandler],
+    guard: LoopGuard | None,
 ) -> Callable[[RunState], dict[str, Any]]:
     def node(run: RunState) -> dict[str, Any]:
         if run.current_state != state:
             raise UnexpectedStateError(state, run.current_state)
 
         result = handlers[state](run)
-        logger.record(
+        transition = logger.record(
             run,
             result.event,
             role=result.role,
             worker=result.worker,
             reason=result.reason,
+        )
+        apply_guard(
+            logger,
+            guard,
+            run,
+            result.event,
+            state,
+            reason=result.reason,
+            worker=transition.worker,
         )
         return run.model_dump()
 
@@ -140,6 +151,7 @@ def _route(run: RunState) -> str:
 def build_main_graph(
     logger: TransitionLogger,
     handlers: dict[State, StageHandler] | None = None,
+    guard: LoopGuard | None = None,
 ) -> Any:
     """トップレベル Graph を組んで compile する。"""
     handlers = handlers if handlers is not None else stub_handlers()
@@ -149,7 +161,7 @@ def build_main_graph(
 
     builder = StateGraph(RunState)
     for state in EXECUTABLE_STATES:
-        builder.add_node(state.value, _make_node(state, logger, handlers))
+        builder.add_node(state.value, _make_node(state, logger, handlers, guard))
 
     destinations = {state.value: state.value for state in EXECUTABLE_STATES}
     destinations[END] = END
@@ -167,13 +179,14 @@ def run_graph(
     run: RunState,
     logger: TransitionLogger,
     handlers: dict[State, StageHandler] | None = None,
+    guard: LoopGuard | None = None,
     recursion_limit: int = 100,
 ) -> RunState:
     """run を停止 State まで進め、最終 RunState を返す。
 
-    recursion_limit は LangGraph 側の暴走止め。工程としての loop guard は
-    §17-9 で Controller 側に入れる（ここでは未実装）。
+    通常のループ停止は guard（guards.py）が行う。recursion_limit はその後ろに
+    残してある最後の非常停止装置で、guard が取りこぼした場合にだけ働く。
     """
-    graph = build_main_graph(logger, handlers)
+    graph = build_main_graph(logger, handlers, guard)
     result = graph.invoke(run, config={"recursion_limit": recursion_limit})
     return RunState.model_validate(result)

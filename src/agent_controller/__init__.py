@@ -13,6 +13,13 @@ from agent_controller.document_stage import (
     run_document_stage,
     stage_completed,
 )
+from agent_controller.guards import (
+    GuardLimits,
+    GuardVerdict,
+    LoopGuard,
+    check_counters,
+    failure_fingerprint,
+)
 from agent_controller.models import (
     DEFAULT_REVIEW_LEVELS,
     ArtifactKind,
@@ -49,6 +56,9 @@ __all__ = [
     "DocumentStage",
     "DocumentStageConfig",
     "Event",
+    "GuardLimits",
+    "GuardVerdict",
+    "LoopGuard",
     "MissingReturnStateError",
     "Phase",
     "ReviewLevel",
@@ -60,8 +70,10 @@ __all__ = [
     "UnknownTransitionError",
     "Worker",
     "allowed_events",
+    "check_counters",
     "default_design_stages",
     "design_artifact_statuses",
+    "failure_fingerprint",
     "invalidate_from",
     "next_phase",
     "next_state",

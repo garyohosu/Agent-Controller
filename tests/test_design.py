@@ -21,6 +21,7 @@ from agent_controller.design import (
     run_design,
 )
 from agent_controller.document_stage import ScriptedPhaseHandlers, StageResult
+from agent_controller.guards import GuardLimits, LoopGuard
 from agent_controller.models import (
     ArtifactState,
     ArtifactStatus,
@@ -261,11 +262,15 @@ class TestUpstreamReturn:
             }
         ).as_handlers()
 
-        final = run_design(design_run, logger, handlers=handlers, max_upstream_returns=2)
+        guard = LoopGuard(
+            logger.store, GuardLimits(max_upstream_rework=2, max_same_fingerprint=99)
+        )
+        final = run_design(design_run, logger, handlers=handlers, guard=guard)
 
         assert final.current_state == State.HUMAN_REQUIRED
         events = [item.event for item in logger.history(final.run_id)]
         assert events[-1] == Event.LOOP_DETECTED
+        assert final.upstream_rework == 3
 
 
 class TestInterruption:
