@@ -1,5 +1,6 @@
 """Agent Controller: deterministic state machine driving exchangeable AI workers."""
 
+from agent_controller.cli_worker import ClaudeCodeWorker, CodexCliWorker
 from agent_controller.design import (
     default_design_stages,
     design_artifact_statuses,
@@ -27,6 +28,7 @@ from agent_controller.impact import (
     merge_impacts,
     validate_impact_result,
 )
+from agent_controller.migrations import LATEST_VERSION, SchemaError
 from agent_controller.models import (
     DEFAULT_REVIEW_LEVELS,
     ArtifactKind,
@@ -51,15 +53,24 @@ from agent_controller.transitions import (
     allowed_events,
     next_state,
 )
+from agent_controller.worker import (
+    WorkerAdapter,
+    WorkerRequest,
+    WorkerResult,
+    phase_handlers_from_worker,
+)
 
 __all__ = [
     "DEFAULT_REVIEW_LEVELS",
     "RESUME",
     "STAGE_TRANSITIONS",
+    "LATEST_VERSION",
     "TRANSITIONS",
     "ArtifactKind",
     "ArtifactState",
     "ArtifactStatus",
+    "ClaudeCodeWorker",
+    "CodexCliWorker",
     "DocumentStage",
     "DocumentStageConfig",
     "Event",
@@ -74,10 +85,14 @@ __all__ = [
     "Role",
     "RunState",
     "RunStatus",
+    "SchemaError",
     "State",
     "Transition",
     "UnknownTransitionError",
     "Worker",
+    "WorkerAdapter",
+    "WorkerRequest",
+    "WorkerResult",
     "allowed_events",
     "check_counters",
     "default_design_stages",
@@ -88,6 +103,7 @@ __all__ = [
     "merge_impacts",
     "next_phase",
     "next_state",
+    "phase_handlers_from_worker",
     "run_design",
     "run_document_stage",
     "stage_completed",
