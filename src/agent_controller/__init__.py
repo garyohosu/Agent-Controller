@@ -1,5 +1,11 @@
 """Agent Controller: deterministic state machine driving exchangeable AI workers."""
 
+from agent_controller.design import (
+    default_design_stages,
+    design_artifact_statuses,
+    invalidate_from,
+    run_design,
+)
 from agent_controller.document_stage import (
     STAGE_TRANSITIONS,
     DocumentStageConfig,
@@ -54,8 +60,12 @@ __all__ = [
     "UnknownTransitionError",
     "Worker",
     "allowed_events",
+    "default_design_stages",
+    "design_artifact_statuses",
+    "invalidate_from",
     "next_phase",
     "next_state",
+    "run_design",
     "run_document_stage",
     "stage_completed",
 ]

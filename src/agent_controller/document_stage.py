@@ -124,6 +124,16 @@ class DocumentStageConfig(BaseModel):
     max_review_retry: int = 2
 
 
+ESCALATING_EVENTS: Final[frozenset[Event]] = frozenset(
+    {Event.UPSTREAM_CHANGE_REQUIRED, Event.SERIOUS_ISSUE}
+)
+"""上位工程へ戻すための離脱。この stage はやり直しになるので再開位置を残さない。
+
+これに対し WORKER_RESOURCE_LIMIT / WORKER_ERROR / CANNOT_ANSWER / RETRY_LIMIT は
+「同じ場所へ戻ってくる」中断なので return_phase を残す。
+"""
+
+
 class StageResult(BaseModel):
     """phase の処理結果。§17-11 で AI Worker の応答がこの形に入る。"""
 
@@ -131,6 +141,12 @@ class StageResult(BaseModel):
     role: Role | None = None
     worker: Worker | None = None
     reason: str | None = None
+
+    upstream_target: DocumentStage | None = None
+    """UPSTREAM_CHANGE_REQUIRED のとき、どの上位工程が問題かを Worker が指す。
+
+    Controller 側で「1 つ上の工程だろう」と推測しない。指定が無ければ受け付けない。
+    """
 
 
 PhaseHandler = Callable[[RunState], StageResult]
@@ -145,6 +161,19 @@ class UnknownPhaseTransitionError(LookupError):
         super().__init__(f"no stage transition for {phase.value} + {event.value}")
 
 
+class MissingUpstreamTargetError(ValueError):
+    """UPSTREAM_CHANGE_REQUIRED なのに、どの上位工程かが指定されていない。
+
+    仕様の空白を Controller が推測で埋めないための拒否（指示書 §8 の考え方）。
+    """
+
+    def __init__(self, phase: Phase) -> None:
+        self.phase = phase
+        super().__init__(
+            f"{phase.value} raised UPSTREAM_CHANGE_REQUIRED without an upstream_target"
+        )
+
+
 def next_phase(current: Phase, event: Event) -> PhaseTarget:
     """phase + event から次の phase（または EXIT / 動的マーカー）を返す。"""
     try:
@@ -157,14 +186,47 @@ def allowed_stage_events(current: Phase) -> frozenset[Event]:
     return frozenset(event for phase, event in STAGE_TRANSITIONS if phase == current)
 
 
-def start_stage(run: RunState, config: DocumentStageConfig) -> None:
-    """stage の開始位置に run を置く。substate と phase はここで初めて埋まる。"""
+def start_stage(run: RunState, config: DocumentStageConfig) -> Transition:
+    """stage の開始位置に run を置き、その記録を返す。
+
+    return_phase が残っていれば、その phase から再開する。中断前の review 強度と
+    review_retry_count は捨てない。捨てると、resource limit を挟むだけで
+    RETRY_LIMIT を回避できてしまう。
+    """
+    from_substate = run.substate
+    resuming = run.return_phase is not None and run.substate == config.name
+
     run.substate = config.name
-    run.phase = Phase.GENERATE
-    run.review_phase = config.review_level.phase
-    run.review_retry_count = 0
-    run.question_source_phase = None
+    if resuming:
+        run.phase = run.return_phase
+        run.review_phase = run.review_phase or config.review_level.phase
+    else:
+        run.phase = Phase.GENERATE
+        run.review_phase = config.review_level.phase
+        run.review_retry_count = 0
+        run.question_source_phase = None
+
+    run.return_phase = None
+    run.transition_count += 1
     run.updated_at = utcnow()
+
+    return Transition(
+        run_id=run.run_id,
+        state=run.current_state,
+        substate=from_substate,
+        phase=None,
+        from_state=run.current_state,
+        from_substate=from_substate,
+        event=Event.START,
+        to_state=run.current_state,
+        to_substate=run.substate,
+        to_phase=run.phase,
+        role=run.active_role,
+        worker=run.active_worker,
+        reason="resume" if resuming else None,
+        retry_count=run.review_retry_count,
+        checkpoint_commit=run.checkpoint_commit,
+    )
 
 
 def resolve_phase(run: RunState, target: PhaseTarget) -> Phase:
@@ -301,6 +363,14 @@ def _make_phase_node(
                 target = EXIT
 
         if target == EXIT:
+            if event == Event.UPSTREAM_CHANGE_REQUIRED:
+                if result.upstream_target is None:
+                    raise MissingUpstreamTargetError(phase)
+                run.pending_upstream_stage = result.upstream_target
+
+            # 同じ場所へ戻ってくる中断だけ再開位置を残す。
+            run.return_phase = None if event in ESCALATING_EVENTS else phase
+
             # ここだけトップレベルの遷移表へ渡す。substate は残し、phase は外す。
             logger.record(
                 run,
@@ -369,11 +439,10 @@ def run_document_stage(
     """stage を COMPLETE か EXIT まで進める。
 
     run がまだこの stage に入っていなければ GENERATE から始める。
-    途中で止まっていた場合はその phase から再開する。
+    return_phase が残っていればそこから再開する。
     """
     if run.substate != config.name or run.phase is None:
-        start_stage(run, config)
-        logger.store.save_run(run)
+        logger.persist(run, start_stage(run, config))
 
     graph = build_document_stage(config, logger, handlers)
     result = graph.invoke(run, config={"recursion_limit": recursion_limit})

@@ -18,6 +18,7 @@ from agent_controller.document_stage import (
     DocumentStageConfig,
     ScriptedPhaseHandlers,
     StageResult,
+    MissingUpstreamTargetError,
     UnknownPhaseTransitionError,
     build_document_stage,
     next_phase,
@@ -118,7 +119,11 @@ class TestFastPath:
         assert stage_completed(final, CLASS_STAGE)
         assert final.current_state == State.DESIGN
         assert final.substate == DocumentStage.CLASS
-        assert phases(logger, final.run_id) == [Phase.REVIEW_LIGHT, Phase.COMPLETE]
+        assert phases(logger, final.run_id) == [
+            Phase.GENERATE,
+            Phase.REVIEW_LIGHT,
+            Phase.COMPLETE,
+        ]
 
     def test_deep_stage_enters_deep_review_directly(
         self, logger: TransitionLogger, design_run: RunState
@@ -126,7 +131,11 @@ class TestFastPath:
         """§5: SPEC は初期値 DEEP。設定値だけで振る舞いが変わる。"""
         final = run_document_stage(design_run, SPEC_STAGE, logger)
 
-        assert phases(logger, final.run_id) == [Phase.REVIEW_DEEP, Phase.COMPLETE]
+        assert phases(logger, final.run_id) == [
+            Phase.GENERATE,
+            Phase.REVIEW_DEEP,
+            Phase.COMPLETE,
+        ]
         assert stage_completed(final, SPEC_STAGE)
 
     def test_default_review_levels_match_the_instruction(self) -> None:
@@ -159,6 +168,7 @@ class TestLocalFix:
         final = run_document_stage(design_run, CLASS_STAGE, logger, handlers)
 
         assert phases(logger, final.run_id) == [
+            Phase.GENERATE,
             Phase.REVIEW_LIGHT,
             Phase.FIX,
             Phase.REVIEW_LIGHT,
@@ -207,6 +217,7 @@ class TestEscalation:
         final = run_document_stage(design_run, CLASS_STAGE, logger, handlers)
 
         assert phases(logger, final.run_id) == [
+            Phase.GENERATE,
             Phase.REVIEW_LIGHT,
             Phase.REVIEW_DEEP,
             Phase.FIX,
@@ -235,6 +246,7 @@ class TestQandA:
         final = run_document_stage(design_run, CLASS_STAGE, logger, handlers)
 
         assert phases(logger, final.run_id) == [
+            Phase.GENERATE,
             Phase.QANDA,
             Phase.GENERATE,
             Phase.REVIEW_LIGHT,
@@ -256,6 +268,7 @@ class TestQandA:
         final = run_document_stage(design_run, CLASS_STAGE, logger, handlers)
 
         assert phases(logger, final.run_id) == [
+            Phase.GENERATE,
             Phase.REVIEW_LIGHT,
             Phase.QANDA,
             Phase.REVIEW_LIGHT,
@@ -278,6 +291,7 @@ class TestQandA:
         final = run_document_stage(design_run, CLASS_STAGE, logger, handlers)
 
         assert phases(logger, final.run_id) == [
+            Phase.GENERATE,
             Phase.REVIEW_LIGHT,
             Phase.QANDA,
             Phase.FIX,
@@ -316,6 +330,7 @@ class TestExitEvents:
                 Phase.REVIEW_LIGHT: [
                     StageResult(
                         event=Event.UPSTREAM_CHANGE_REQUIRED,
+                        upstream_target=DocumentStage.SEQUENCE,
                         reason="sequence responsibility mismatch",
                     )
                 ],
@@ -329,7 +344,21 @@ class TestExitEvents:
         assert last.to_state == State.DESIGN
         assert last.to_phase is None
         assert final.phase is None
+        assert final.pending_upstream_stage == DocumentStage.SEQUENCE
+        # 上位へ戻る離脱では stage をやり直すので、再開位置は残さない。
+        assert final.return_phase is None
         assert not stage_completed(final, CLASS_STAGE)
+
+    def test_upstream_change_without_a_target_is_rejected(
+        self, logger: TransitionLogger, design_run: RunState
+    ) -> None:
+        """どの上位工程が問題かを Controller が推測しない。"""
+        handlers = ScriptedPhaseHandlers(
+            {Phase.GENERATE: [Event.UPSTREAM_CHANGE_REQUIRED]}
+        ).as_handlers()
+
+        with pytest.raises(MissingUpstreamTargetError):
+            run_document_stage(design_run, CLASS_STAGE, logger, handlers)
 
     def test_resource_limit_stops_the_stage(
         self, logger: TransitionLogger, design_run: RunState
@@ -412,6 +441,7 @@ class TestResume:
         stopped = run_document_stage(design_run, CLASS_STAGE, logger, stopping)
         assert stopped.current_state == State.WAIT_RESOURCE
         assert stopped.substate == DocumentStage.CLASS
+        assert stopped.return_phase == Phase.REVIEW_LIGHT
 
         # Worker を切り替えて DESIGN へ戻す。
         logger.record(
@@ -422,10 +452,47 @@ class TestResume:
         )
         assert stopped.current_state == State.DESIGN
 
-        # phase は失われているので GENERATE からやり直しになる。
+        # GENERATE からやり直さず、止まった REVIEW_LIGHT へ戻る。
         resumed = run_document_stage(stopped, CLASS_STAGE, logger, stub_phase_handlers())
         assert stage_completed(resumed, CLASS_STAGE)
         assert resumed.active_worker == Worker.CLAUDE_CODE
+        assert resumed.return_phase is None
+
+        after_resume = [item.to_phase for item in logger.history(resumed.run_id)][-2:]
+        assert after_resume == [Phase.REVIEW_LIGHT, Phase.COMPLETE]
+
+    def test_resume_keeps_the_review_retry_budget(
+        self, logger: TransitionLogger, design_run: RunState
+    ) -> None:
+        """resource limit を挟んで retry 予算がリセットされないこと。
+
+        リセットされると、thrash している stage が resource limit を挟むだけで
+        RETRY_LIMIT を回避できてしまう。
+        """
+        stopping = ScriptedPhaseHandlers(
+            {
+                Phase.GENERATE: [Event.DONE],
+                Phase.REVIEW_LIGHT: [Event.LOCAL_FIX, Event.WORKER_RESOURCE_LIMIT],
+                Phase.FIX: [Event.DONE],
+            }
+        ).as_handlers()
+        stopped = run_document_stage(design_run, CLASS_STAGE, logger, stopping)
+        assert stopped.review_retry_count == 1
+
+        logger.record(stopped, Event.RESOURCE_AVAILABLE, to_substate=DocumentStage.CLASS)
+
+        thrashing = ScriptedPhaseHandlers(
+            {
+                Phase.GENERATE: [Event.DONE],
+                Phase.REVIEW_LIGHT: [Event.LOCAL_FIX],
+                Phase.FIX: [Event.DONE],
+            }
+        ).as_handlers()
+        final = run_document_stage(stopped, CLASS_STAGE, logger, thrashing)
+
+        assert final.current_state == State.HUMAN_REQUIRED
+        assert [item.event for item in logger.history(final.run_id)][-1] == Event.RETRY_LIMIT
+        assert final.review_retry_count == CLASS_STAGE.max_review_retry + 1
 
     def test_run_already_inside_a_phase_is_not_restarted(
         self, store: Store, logger: TransitionLogger, design_run: RunState

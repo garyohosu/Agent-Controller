@@ -232,6 +232,21 @@ class RunState(BaseModel):
     return_state: State | None = None
     """HUMAN_REQUIRED / WAIT_RESOURCE から復帰する先。"""
 
+    return_phase: Phase | None = None
+    """中断した Document Stage を再開する phase。
+
+    return_state の phase 版。レビュー途中で resource limit に当たった run を、
+    GENERATE からやり直させずに止まった位置へ戻すために持つ。
+    上位工程へ戻るための離脱（UPSTREAM_CHANGE_REQUIRED / SERIOUS_ISSUE）では
+    その stage をやり直すので設定しない。
+    """
+
+    pending_upstream_stage: DocumentStage | None = None
+    """UPSTREAM_CHANGE_REQUIRED で Worker が指した、戻るべき上位工程。
+
+    Controller が推測で決めない。Worker が指定しなければ受け付けない。
+    """
+
     question_source_state: State | None = None
     question_source_phase: Phase | None = None
     """QANDA へ入る前の phase。回答後はここへ戻る（指示書 §3 / §9）。"""
