@@ -25,6 +25,7 @@ current_state + event -> next_state
 - 影響範囲分析（AI の提案を依存グラフの制約で検証してから適用）
 - DB スキーマのマイグレーション
 - 薄い Worker interface と Claude Code / Codex CLI の Adapter
+- QandA.md（Agent 間の問い合わせチャネル）
 
 遷移表は 2 段に分かれている。トップレベルが `(State, Event) -> State`、
 Document Stage の中が `(Phase, Event) -> Phase`。
@@ -39,9 +40,15 @@ LangGraph の `recursion_limit` はその後ろに残した最後の非常停止
 Worker の出力は信用しない。壊れた JSON も知らない Event 名も、例外ではなく
 WORKER_ERROR という遷移として記録し、生の出力を添えて人間へ渡す。
 
+既存の文書は上書きせず、その工程の強度でレビューから入る。
+人が書いた SPEC.md を Controller が作り直すことはない。
+
+Markdown は人間と AI が読む成果物、SQLite は制御状態。QandA.md も遷移ログも
+SQLite から生成し、読み戻さない。
+
 Codex CLI で SPEC.md → USECASE.md の 1 stage を実接続で通してある。
-QandA.md の実体、Git checkpoint / rollback、COMPLETE gate は未実装。
-詳細は `instructions/result-2026-08-09-006.md` を参照。
+Git checkpoint / rollback、COMPLETE gate、HUMAN_REQUIRED からの復帰は未実装。
+詳細は `instructions/result-2026-08-09-007.md` を参照。
 
 ## セットアップ
 
@@ -65,3 +72,4 @@ uv run pytest
 - `instructions/result-2026-08-09-004.md` — 実施結果（§17-9）
 - `instructions/result-2026-08-09-005.md` — 実施結果（§17-10）
 - `instructions/result-2026-08-09-006.md` — 実施結果（§17-11 / §17-12 の一部）
+- `instructions/result-2026-08-09-007.md` — 実施結果（入口の検査 / 指紋の構造化 / §17-13）
