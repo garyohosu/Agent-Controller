@@ -11,7 +11,7 @@ current_state + event -> next_state
 
 ## 現在の実装範囲
 
-実装指示書 `instructions/instruction-2026-08-08-001.md` の §17 実装順のうち 1〜9 まで。
+実装指示書 `instructions/instruction-2026-08-08-001.md` の §17 実装順のうち 1〜10 まで。
 
 - プロジェクト骨格
 - Pydantic の State / Event / ArtifactStatus モデルと遷移表
@@ -22,6 +22,7 @@ current_state + event -> next_state
 - DESIGN の Progressive Refinement（SPEC → USECASE → SEQUENCE → CLASS → UI → TESTCASE）
 - LIGHT / DEEP レビュー強度の初期配線
 - 無限ループ防止（回数の上限と NO_PROGRESS 指紋）
+- 影響範囲分析（AI の提案を依存グラフの制約で検証してから適用）
 
 遷移表は 2 段に分かれている。トップレベルが `(State, Event) -> State`、
 Document Stage の中が `(Phase, Event) -> Phase`。
@@ -30,8 +31,11 @@ stage の中の往復はトップレベル State を動かさない。
 ループを止めるのは Controller の機械的な歯止めであって、AI の判断ではない。
 LangGraph の `recursion_limit` はその後ろに残した最後の非常停止装置。
 
-AI Worker への実接続、IMPACT_ANALYSIS、Git checkpoint / rollback は未実装。
-詳細は `instructions/result-2026-08-09-004.md` を参照。
+影響範囲は AI が提案し、Controller は依存グラフの制約に照らして検証・適用するだけ。
+矛盾した提案（上流が STALE なのに下流が VALID など）は適用せず人間へ渡す。
+
+AI Worker への実接続、QandA.md の実体、Git checkpoint / rollback は未実装。
+詳細は `instructions/result-2026-08-09-005.md` を参照。
 
 ## セットアップ
 
@@ -53,3 +57,4 @@ uv run pytest
 - `instructions/result-2026-08-08-002.md` — 実施結果（§17-6）
 - `instructions/result-2026-08-09-003.md` — 実施結果（§17-7 / §17-8）
 - `instructions/result-2026-08-09-004.md` — 実施結果（§17-9）
+- `instructions/result-2026-08-09-005.md` — 実施結果（§17-10）

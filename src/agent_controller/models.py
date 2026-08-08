@@ -137,6 +137,10 @@ class Event(StrEnum):
     LOOP_DETECTED = "LOOP_DETECTED"
     CANNOT_ANSWER = "CANNOT_ANSWER"
 
+    # 影響範囲分析の結果が依存関係として成立していない（§6 / §17-10）。
+    # AI は影響範囲を提案できるが、依存グラフの制約は破れない。
+    INVALID_IMPACT_RESULT = "INVALID_IMPACT_RESULT"
+
     # 指示書 §3 の max_review_retry / §11 の retry 上限を Event 化したもの。
     # NO_PROGRESS とは分ける。RETRY_LIMIT は回数の超過、NO_PROGRESS は同じ失敗の
     # 繰り返し（fingerprint）で、判定材料が違う。
@@ -151,11 +155,25 @@ class Event(StrEnum):
 
 
 class ArtifactStatus(StrEnum):
-    """影響範囲分析の結果（指示書 §6）。"""
+    """影響範囲分析の結果（指示書 §6）。
+
+    VALID           影響なし。処理不要
+    REVIEW_REQUIRED 影響の可能性あり。軽量レビューのみ
+    STALE           影響あり。再生成または修正が必要
+    """
 
     VALID = "VALID"
     REVIEW_REQUIRED = "REVIEW_REQUIRED"
     STALE = "STALE"
+
+    @property
+    def severity(self) -> int:
+        """深刻さの順序。影響を統合するとき、軽い方へは倒さない。"""
+        return {
+            ArtifactStatus.VALID: 0,
+            ArtifactStatus.REVIEW_REQUIRED: 1,
+            ArtifactStatus.STALE: 2,
+        }[self]
 
 
 class ArtifactKind(StrEnum):

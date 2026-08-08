@@ -51,6 +51,8 @@ TRANSITIONS: Final[dict[tuple[State, Event], TransitionTarget]] = {
     (State.DESIGN, Event.SERIOUS_ISSUE): State.DESIGN,
     (State.DESIGN, Event.UPSTREAM_CHANGE_REQUIRED): State.DESIGN,
     (State.DESIGN, Event.CANNOT_ANSWER): State.HUMAN_REQUIRED,
+    # AI の影響範囲分析が依存関係として成立していない場合、勝手に補正せず人間へ渡す。
+    (State.DESIGN, Event.INVALID_IMPACT_RESULT): State.HUMAN_REQUIRED,
     (State.DESIGN, Event.RETRY_LIMIT): State.HUMAN_REQUIRED,
     (State.DESIGN, Event.NO_PROGRESS): State.HUMAN_REQUIRED,
     (State.DESIGN, Event.LOOP_DETECTED): State.HUMAN_REQUIRED,

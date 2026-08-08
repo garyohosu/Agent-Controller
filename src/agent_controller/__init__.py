@@ -20,6 +20,13 @@ from agent_controller.guards import (
     check_counters,
     failure_fingerprint,
 )
+from agent_controller.impact import (
+    ImpactAnalyzer,
+    ImpactResult,
+    default_impact_analyzer,
+    merge_impacts,
+    validate_impact_result,
+)
 from agent_controller.models import (
     DEFAULT_REVIEW_LEVELS,
     ArtifactKind,
@@ -58,6 +65,8 @@ __all__ = [
     "Event",
     "GuardLimits",
     "GuardVerdict",
+    "ImpactAnalyzer",
+    "ImpactResult",
     "LoopGuard",
     "MissingReturnStateError",
     "Phase",
@@ -72,12 +81,15 @@ __all__ = [
     "allowed_events",
     "check_counters",
     "default_design_stages",
+    "default_impact_analyzer",
     "design_artifact_statuses",
     "failure_fingerprint",
     "invalidate_from",
+    "merge_impacts",
     "next_phase",
     "next_state",
     "run_design",
     "run_document_stage",
     "stage_completed",
+    "validate_impact_result",
 ]

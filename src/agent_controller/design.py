@@ -29,6 +29,12 @@ from agent_controller.document_stage import (
     stage_completed,
 )
 from agent_controller.guards import LoopGuard, check_counters
+from agent_controller.impact import (
+    ImpactAnalyzer,
+    default_impact_analyzer,
+    merge_impacts,
+    validate_impact_result,
+)
 from agent_controller.models import (
     DEFAULT_REVIEW_LEVELS,
     DOCUMENT_STAGE_ORDER,
@@ -120,9 +126,8 @@ def invalidate_from(
 ) -> None:
     """target とその下流を STALE にする。
 
-    これは暫定の影響範囲判定である。指示書 §6 の IMPACT_ANALYSIS は
-    VALID / REVIEW_REQUIRED / STALE を成果物ごとに評価するが、それは §17-10。
-    ここでは「上流が変われば下流は全部やり直し」という最も粗い規則しか持たない。
+    影響範囲分析（impact.py）を使わずに直接無効化したいときの入口。
+    通常の手戻りは run_design が analyzer を通す。
     """
     names = [config.name for config in stages]
     if target not in names:
@@ -130,6 +135,15 @@ def invalidate_from(
 
     for stage in names[names.index(target) :]:
         _mark(logger, run, stage, ArtifactStatus.STALE, reason)
+
+
+def _entry_for(status: ArtifactStatus) -> Phase:
+    """成果物の状態から、その工程にどこから入るかを決める（指示書 §6）。
+
+    REVIEW_REQUIRED は「影響の可能性あり。軽量レビューのみ」なので、
+    生成をやり直さずレビューから入る。
+    """
+    return Phase.REVIEW_LIGHT if status == ArtifactStatus.REVIEW_REQUIRED else Phase.GENERATE
 
 
 class DesignProgressError(RuntimeError):
@@ -142,6 +156,7 @@ def run_design(
     stages: list[DocumentStageConfig] | None = None,
     handlers: dict[Phase, PhaseHandler] | None = None,
     guard: LoopGuard | None = None,
+    analyzer: ImpactAnalyzer | None = None,
 ) -> RunState:
     """すべての設計成果物が VALID になるまで stage を回す。
 
@@ -154,6 +169,8 @@ def run_design(
     """
     stages = stages if stages is not None else default_design_stages()
     guard = guard if guard is not None else LoopGuard(logger.store)
+    analyzer = analyzer if analyzer is not None else default_impact_analyzer
+    entry_reason: str | None = None
 
     while True:
         statuses = logger.store.artifacts(run.run_id)
@@ -170,7 +187,16 @@ def run_design(
             logger.record(run, Event.PASS, reason="all design artifacts valid")
             return run
 
-        run = run_document_stage(run, pending, logger, handlers, guard)
+        run = run_document_stage(
+            run,
+            pending,
+            logger,
+            handlers,
+            guard,
+            entry_phase=_entry_for(_artifact_status(statuses, pending.name)),
+            entry_reason=entry_reason,
+        )
+        entry_reason = None
 
         if run.current_state != State.DESIGN:
             # HUMAN_REQUIRED / WAIT_RESOURCE / ABORT。stage の途中で止まっている。
@@ -198,13 +224,28 @@ def run_design(
                 )
                 return run
 
-            invalidate_from(
-                logger,
-                run,
-                stages,
-                target,
-                reason=f"upstream change requested from {pending.name.value}",
+            # AI が影響範囲を提案し、Controller は依存グラフの制約に照らして検証する。
+            # 通れば適用し、破っていれば適用せず人間へ渡す。
+            proposal = analyzer(run, target, stages, statuses)
+            violations = validate_impact_result(proposal, stages, expected_cause=target)
+            if violations:
+                logger.record(
+                    run,
+                    Event.INVALID_IMPACT_RESULT,
+                    to_substate=run.substate,
+                    reason="; ".join(violations),
+                )
+                return run
+
+            merged = merge_impacts(
+                design_artifact_statuses(logger, run, stages), proposal, stages
             )
+            for stage, status in merged.items():
+                _mark(logger, run, stage, status, proposal.reason)
+
+            # §6「影響分析結果と再開理由は必ずログへ残す」。
+            # 次の工程に入る行の理由として出す。
+            entry_reason = f"impact: {proposal.summary()} | {proposal.reason}"
             run.pending_upstream_stage = None
             logger.store.save_run(run)
             continue

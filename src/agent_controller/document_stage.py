@@ -188,12 +188,20 @@ def allowed_stage_events(current: Phase) -> frozenset[Event]:
     return frozenset(event for phase, event in STAGE_TRANSITIONS if phase == current)
 
 
-def start_stage(run: RunState, config: DocumentStageConfig) -> Transition:
+def start_stage(
+    run: RunState,
+    config: DocumentStageConfig,
+    entry_phase: Phase = Phase.GENERATE,
+    reason: str | None = None,
+) -> Transition:
     """stage の開始位置に run を置き、その記録を返す。
 
-    return_phase が残っていれば、その phase から再開する。中断前の review 強度と
+    return_phase が残っていれば、そちらが優先される。中断前の review 強度と
     review_retry は捨てない。捨てると、resource limit を挟むだけで
     RETRY_LIMIT を回避できてしまう。
+
+    entry_phase は「新しく始めるときにどこから入るか」。影響範囲分析が
+    REVIEW_REQUIRED と判定した工程は、生成をやり直さずレビューから入る（§6）。
     """
     from_substate = run.substate
     resuming = run.return_phase is not None and run.substate == config.name
@@ -203,8 +211,11 @@ def start_stage(run: RunState, config: DocumentStageConfig) -> Transition:
         run.phase = run.return_phase
         run.review_phase = run.review_phase or config.review_level.phase
     else:
-        run.phase = Phase.GENERATE
-        run.review_phase = config.review_level.phase
+        run.phase = entry_phase
+        # レビューだけで入る場合は軽量レビュー固定（§6「軽量レビューのみ」）。
+        run.review_phase = (
+            entry_phase if entry_phase in REVIEW_PHASES else config.review_level.phase
+        )
         run.review_retry = 0
         run.question_source_phase = None
 
@@ -229,7 +240,7 @@ def start_stage(run: RunState, config: DocumentStageConfig) -> Transition:
         to_phase=run.phase,
         role=run.active_role,
         worker=run.active_worker,
-        reason="resume" if resuming else None,
+        reason="resume" if resuming else reason,
         state_retry=run.state_retry,
         review_retry=run.review_retry,
         repeat=run.repeat,
@@ -477,15 +488,17 @@ def run_document_stage(
     logger: TransitionLogger,
     handlers: dict[Phase, PhaseHandler] | None = None,
     guard: LoopGuard | None = None,
+    entry_phase: Phase = Phase.GENERATE,
+    entry_reason: str | None = None,
     recursion_limit: int = 100,
 ) -> RunState:
     """stage を COMPLETE か EXIT まで進める。
 
-    run がまだこの stage に入っていなければ GENERATE から始める。
+    run がまだこの stage に入っていなければ entry_phase から始める。
     return_phase が残っていればそこから再開する。
     """
     if run.substate != config.name or run.phase is None:
-        logger.persist(run, start_stage(run, config))
+        logger.persist(run, start_stage(run, config, entry_phase, entry_reason))
 
     graph = build_document_stage(config, logger, handlers, guard)
     result = graph.invoke(run, config={"recursion_limit": recursion_limit})
