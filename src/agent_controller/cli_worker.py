@@ -168,13 +168,28 @@ def build_prompt(request: WorkerRequest) -> str:
         "After doing the work, reply with a single fenced JSON object and nothing after it:",
         "",
         "```json",
-        '{"event": "...", "reason": "...", "upstream_target": null, "files_changed": []}',
+        '{"event": "...", "reason": "...", "finding_code": null, '
+        '"finding_subject": null, "finding_category": null, '
+        '"upstream_target": null, "files_changed": []}',
         "```",
         "",
         f"`event` must be exactly one of: {allowed}",
         "`reason` is one short sentence a human will read in a log.",
         "`upstream_target` is required only for UPSTREAM_CHANGE_REQUIRED, and must name "
         "the design stage that needs to change (SPEC, USECASE, SEQUENCE, CLASS, UI, TESTCASE).",
+        "",
+        "When the event reports a problem (FAIL, LOCAL_FIX, SERIOUS_ISSUE, "
+        "UPSTREAM_CHANGE_REQUIRED), `finding_code` and `finding_subject` are required:",
+        "",
+        "- `finding_code`: SCREAMING_SNAKE_CASE name for the KIND of problem, e.g. "
+        "RESPONSIBILITY_MISMATCH, MISSING_SECTION, CONTRADICTS_SPEC, BROKEN_DIAGRAM, "
+        "TEST_FAILURE. Use the SAME code every time you report the same kind of problem.",
+        "- `finding_subject`: the specific thing at fault, e.g. a class name, a section "
+        "heading, or a test id. Use the SAME subject string every time you report the "
+        "same problem, even if you word `reason` differently.",
+        "",
+        "These two fields are how the controller detects that a problem is not getting "
+        "fixed. Wording them consistently matters more than wording them well.",
     ]
     return "\n".join(lines)
 
@@ -206,10 +221,17 @@ def result_from_output(text: str, raw: str) -> WorkerResult:
             raw_output=raw,
         )
 
+    def field(name: str) -> str | None:
+        value = payload.get(name)
+        return str(value).strip() or None if value is not None else None
+
     return WorkerResult(
         event=event,
         structured_result=payload,
         reason=str(payload.get("reason") or "") or None,
+        finding_code=field("finding_code"),
+        finding_subject=field("finding_subject"),
+        finding_category=field("finding_category"),
         files_changed=[str(item) for item in payload.get("files_changed") or []],
         raw_output=raw,
     )

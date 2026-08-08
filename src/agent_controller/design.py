@@ -21,6 +21,8 @@ stage 単位の移動も必ず logger を通すので、遷移ログからは同
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from agent_controller.document_stage import (
     ESCALATING_EVENTS,
     DocumentStageConfig,
@@ -137,13 +139,36 @@ def invalidate_from(
         _mark(logger, run, stage, ArtifactStatus.STALE, reason)
 
 
-def _entry_for(status: ArtifactStatus) -> Phase:
-    """成果物の状態から、その工程にどこから入るかを決める（指示書 §6）。
+def _entry_for(
+    statuses: dict[ArtifactKind, ArtifactState],
+    config: DocumentStageConfig,
+    workspace: str | Path | None,
+) -> Phase:
+    """その工程にどこから入るかを決める。
 
-    REVIEW_REQUIRED は「影響の可能性あり。軽量レビューのみ」なので、
-    生成をやり直さずレビューから入る。
+    - REVIEW_REQUIRED  影響の可能性あり。軽量レビューのみ（指示書 §6）
+    - STALE            影響あり。生成からやり直す
+    - 未処理だが文書がある  生成せず、その工程の強度でレビューから入る
+    - 未処理で文書も無い    生成から
+
+    3 つ目が要点。人が書いた SPEC.md を Controller が上書きしてはいけない。
+    最上流こそ無検査で通さず、まず読ませる。
+
+    「未処理」の判定には artifact 行の有無を使う。行があるということは、
+    この run で Controller が既にその工程を触ったということ。だから影響範囲分析が
+    STALE を書いた工程は、文書が残っていても再生成になる。
     """
-    return Phase.REVIEW_LIGHT if status == ArtifactStatus.REVIEW_REQUIRED else Phase.GENERATE
+    artifact = statuses.get(artifact_kind_for(config.name))
+
+    if artifact is not None:
+        if artifact.status == ArtifactStatus.REVIEW_REQUIRED:
+            return Phase.REVIEW_LIGHT
+        return Phase.GENERATE
+
+    if workspace is not None and (Path(workspace) / config.output).exists():
+        return config.review_level.phase
+
+    return Phase.GENERATE
 
 
 class DesignProgressError(RuntimeError):
@@ -157,6 +182,7 @@ def run_design(
     handlers: dict[Phase, PhaseHandler] | None = None,
     guard: LoopGuard | None = None,
     analyzer: ImpactAnalyzer | None = None,
+    workspace: str | Path | None = None,
 ) -> RunState:
     """すべての設計成果物が VALID になるまで stage を回す。
 
@@ -166,6 +192,9 @@ def run_design(
 
     上位手戻りの回数は guard が見る（GuardLimits.max_upstream_rework）。
     guard を渡さなければ既定値の LoopGuard を使う。歯止め無しでは回さない。
+
+    workspace を渡すと、既に存在する文書は生成せずレビューから入る。
+    渡さなければ全工程を生成から始める。
     """
     stages = stages if stages is not None else default_design_stages()
     guard = guard if guard is not None else LoopGuard(logger.store)
@@ -193,7 +222,7 @@ def run_design(
             logger,
             handlers,
             guard,
-            entry_phase=_entry_for(_artifact_status(statuses, pending.name)),
+            entry_phase=_entry_for(statuses, pending, workspace),
             entry_reason=entry_reason,
         )
         entry_reason = None

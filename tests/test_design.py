@@ -373,3 +373,125 @@ class TestGuards:
 
         with pytest.raises(DesignProgressError):
             run_design(design_run, logger, handlers=handlers)
+
+
+class TestExistingDocuments:
+    """人が書いた文書を Controller が上書きしない（入口の検査）。"""
+
+    def _handlers(self):
+        return ScriptedPhaseHandlers(
+            {
+                Phase.GENERATE: [Event.DONE],
+                Phase.REVIEW_DEEP: [Event.PASS],
+                Phase.REVIEW_LIGHT: [Event.PASS],
+            }
+        ).as_handlers()
+
+    def test_an_existing_spec_is_reviewed_not_regenerated(
+        self, tmp_path, logger: TransitionLogger, design_run: RunState
+    ) -> None:
+        """SPEC は最上流。生成せず、まず DEEP レビューで読ませる。"""
+        written = "# SPEC\n\nhand written by a person\n"
+        (tmp_path / "SPEC.md").write_text(written, encoding="utf-8")
+
+        final = run_design(
+            design_run, logger, handlers=self._handlers(), workspace=tmp_path
+        )
+
+        entries = dict(
+            (item.to_substate, item.to_phase)
+            for item in logger.history(final.run_id)
+            if item.event == Event.START
+        )
+        assert entries[DocumentStage.SPEC] == Phase.REVIEW_DEEP
+        assert entries[DocumentStage.USECASE] == Phase.GENERATE
+        # 上書きされていない。
+        assert (tmp_path / "SPEC.md").read_text(encoding="utf-8") == written
+
+    def test_missing_documents_are_still_generated(
+        self, tmp_path, logger: TransitionLogger, design_run: RunState
+    ) -> None:
+        final = run_design(
+            design_run, logger, handlers=self._handlers(), workspace=tmp_path
+        )
+        entries = [
+            item.to_phase
+            for item in logger.history(final.run_id)
+            if item.event == Event.START
+        ]
+        assert entries == [Phase.GENERATE] * len(entries)
+
+    def test_review_level_decides_the_entry_strength(
+        self, tmp_path, logger: TransitionLogger, design_run: RunState
+    ) -> None:
+        """既定 LIGHT の工程は LIGHT、DEEP の工程は DEEP で読む（§5）。"""
+        for name in ("SPEC.md", "USECASE.md", "SEQUENCE.md"):
+            (tmp_path / name).write_text("existing\n", encoding="utf-8")
+
+        final = run_design(
+            design_run, logger, handlers=self._handlers(), workspace=tmp_path
+        )
+
+        entries = dict(
+            (item.to_substate, item.to_phase)
+            for item in logger.history(final.run_id)
+            if item.event == Event.START
+        )
+        assert entries[DocumentStage.SPEC] == Phase.REVIEW_DEEP
+        assert entries[DocumentStage.USECASE] == Phase.REVIEW_DEEP
+        assert entries[DocumentStage.SEQUENCE] == Phase.REVIEW_LIGHT
+        assert entries[DocumentStage.CLASS] == Phase.GENERATE
+
+    def test_impact_analysis_still_forces_regeneration(
+        self, tmp_path, logger: TransitionLogger, design_run: RunState
+    ) -> None:
+        """STALE と書かれた工程は、文書が残っていても作り直す。
+
+        artifact 行を書くことが「既存文書の保護」を解除する合図になっている。
+        """
+        for name in ("SPEC.md", "USECASE.md", "SEQUENCE.md", "CLASS.md", "TESTCASE.md"):
+            (tmp_path / name).write_text("existing\n", encoding="utf-8")
+
+        handlers = ScriptedPhaseHandlers(
+            {
+                Phase.GENERATE: [Event.DONE],
+                Phase.REVIEW_DEEP: [Event.PASS],
+                Phase.REVIEW_LIGHT: [
+                    Event.PASS,  # SEQUENCE
+                    StageResult(
+                        event=Event.UPSTREAM_CHANGE_REQUIRED,
+                        upstream_target=DocumentStage.SEQUENCE,
+                        reason="sequence is wrong",
+                    ),  # CLASS
+                    Event.PASS,
+                    Event.PASS,
+                    Event.PASS,
+                ],
+            }
+        ).as_handlers()
+
+        final = run_design(design_run, logger, handlers=handlers, workspace=tmp_path)
+
+        entries = [
+            (item.to_substate, item.to_phase)
+            for item in logger.history(final.run_id)
+            if item.event == Event.START
+        ]
+        # 1 周目の SEQUENCE はレビューから、手戻り後は生成から。
+        sequence_entries = [phase for stage, phase in entries if stage == DocumentStage.SEQUENCE]
+        assert sequence_entries == [Phase.REVIEW_LIGHT, Phase.GENERATE]
+
+    def test_without_a_workspace_everything_is_generated(
+        self, tmp_path, logger: TransitionLogger, design_run: RunState
+    ) -> None:
+        """workspace を渡さなければ従来どおり全工程を生成から。"""
+        (tmp_path / "SPEC.md").write_text("existing\n", encoding="utf-8")
+
+        final = run_design(design_run, logger, handlers=self._handlers())
+
+        entries = [
+            item.to_phase
+            for item in logger.history(final.run_id)
+            if item.event == Event.START
+        ]
+        assert entries == [Phase.GENERATE] * len(entries)

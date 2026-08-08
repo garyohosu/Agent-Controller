@@ -56,6 +56,19 @@ class WorkerOutput(BaseModel):
 
     event: str
     reason: str = ""
+    """人間がログで読む 1 文。機械判定には使わない。"""
+
+    finding_code: str | None = None
+    """指摘の種別。RESPONSIBILITY_MISMATCH / TEST_FAILURE / MISSING_SECTION など。
+
+    同じ問題を同じ code で呼ばせることで、reason の言い回しが変わっても
+    「まだ直っていない」を機械的に判定できる（§17-9）。
+    """
+
+    finding_subject: str | None = None
+    """指摘の対象。OrderService / tests/test_order.py::test_cancel など。"""
+
+    finding_category: str | None = None
     upstream_target: str | None = None
     files_changed: list[str] = Field(default_factory=list)
 
@@ -100,6 +113,10 @@ class WorkerResult(BaseModel):
     event: Event
     structured_result: dict[str, Any] | None = None
     reason: str | None = None
+    finding_code: str | None = None
+    finding_subject: str | None = None
+    finding_category: str | None = None
+
     files_changed: list[str] = Field(default_factory=list)
     """Worker の自己申告。実際に変わったかは検証していない（§17-14 の Git 連携まで）。"""
 
@@ -167,6 +184,9 @@ def stage_result_from(result: WorkerResult, worker: Worker, role: Role) -> Stage
         worker=worker,
         reason=result.reason,
         upstream_target=DocumentStage(upstream) if upstream is not None else None,
+        finding_code=result.finding_code,
+        finding_subject=result.finding_subject,
+        finding_category=result.finding_category,
     )
 
 

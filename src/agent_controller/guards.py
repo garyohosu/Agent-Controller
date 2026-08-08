@@ -121,21 +121,69 @@ def failure_fingerprint(
     phase: Phase | None,
     event: Event,
     reason: str | None,
+    finding_code: str | None = None,
+    finding_subject: str | None = None,
 ) -> str:
     """同じ失敗かどうかを判定するための指紋。
 
-    位置・Event・理由をそのまま突き合わせる。実 AI Worker が理由を自由記述で
-    書くようになると「2 tests failed」と「2 failing tests」が別物になるため、
-    正規化が要るかもしれない（§17-12 の論点）。
+    機械判定は構造化された項目で行い、reason は人間向けに残す。
+
+        機械判定 -> finding_code / finding_subject
+        人間向け -> reason
+
+    自由文を指紋にすると「2 tests failed」と「2 failing tests」が別物になり、
+    実 AI を繋いだ途端に NO_PROGRESS が働かなくなる（実測で確認した）。
+
+    finding_code が無い場合は reason で代用する。厳しく拒否して
+    HUMAN_REQUIRED にすると、Worker の書き方の揺れだけで run が止まる。
+    検出が鈍るだけの方がましなので、そちらへ倒す。
     """
+    if finding_code:
+        signature = "|".join(
+            (
+                _normalize(finding_code),
+                _normalize(finding_subject),
+            )
+        )
+    else:
+        signature = _normalize(reason)
+
     parts = (
         state.value,
         substate.value if substate is not None else "-",
         phase.value if phase is not None else "-",
         event.value,
-        (reason or "").strip().lower(),
+        signature,
     )
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
+def _normalize(value: str | None) -> str:
+    return (value or "").strip().upper()
+
+
+def describe_finding(
+    event: Event,
+    state: State,
+    substate: DocumentStage | None,
+    phase: Phase | None,
+    finding_code: str | None,
+    finding_subject: str | None,
+) -> str:
+    """歯止めの理由に書く「何が繰り返されたか」。"""
+    where = "/".join(
+        part
+        for part in (
+            state.value,
+            substate.value if substate is not None else None,
+            phase.value if phase is not None else None,
+        )
+        if part is not None
+    )
+    if finding_code:
+        subject = f" on {finding_subject}" if finding_subject else ""
+        return f"{finding_code}{subject} ({event.value} at {where})"
+    return f"{event.value} at {where}"
 
 
 class NoProgressTracker:
@@ -158,11 +206,15 @@ class NoProgressTracker:
         phase: Phase | None,
         reason: str | None,
         worker: Worker | None,
+        finding_code: str | None = None,
+        finding_subject: str | None = None,
     ) -> GuardVerdict | None:
         if event not in TRACKED_EVENTS:
             return None
 
-        fingerprint = failure_fingerprint(state, substate, phase, event, reason)
+        fingerprint = failure_fingerprint(
+            state, substate, phase, event, reason, finding_code, finding_subject
+        )
         occurrences, workers = self.store.observe_fingerprint(
             run.run_id,
             fingerprint,
@@ -172,16 +224,9 @@ class NoProgressTracker:
 
         # どの失敗が繰り返されたのかログから分かるようにする。歯止めの行は
         # 遷移した後に記録されるので、位置を書かないと元の失敗を辿れない。
-        where = "/".join(
-            part
-            for part in (
-                state.value,
-                substate.value if substate is not None else None,
-                phase.value if phase is not None else None,
-            )
-            if part is not None
+        what = describe_finding(
+            event, state, substate, phase, finding_code, finding_subject
         )
-        what = f"{event.value} at {where}"
 
         if len(workers) > 1 and occurrences > 1:
             return GuardVerdict(
@@ -224,13 +269,16 @@ class LoopGuard:
         phase: Phase | None = None,
         reason: str | None = None,
         worker: Worker | None = None,
+        finding_code: str | None = None,
+        finding_subject: str | None = None,
     ) -> GuardVerdict | None:
         """歯止めが働くなら発火すべき Event を返す。
 
         Worker を替えても同じ失敗、が最優先。あとは回数の上限を見る。
         """
         verdict = self.no_progress.observe(
-            run, event, state, substate, phase, reason, worker
+            run, event, state, substate, phase, reason, worker,
+            finding_code, finding_subject,
         )
         if verdict is not None:
             return verdict
@@ -247,6 +295,8 @@ def apply_guard(
     phase: Phase | None = None,
     reason: str | None = None,
     worker: Worker | None = None,
+    finding_code: str | None = None,
+    finding_subject: str | None = None,
 ) -> GuardVerdict | None:
     """遷移を記録した直後に呼ぶ。歯止めが働いたら、それも 1 遷移として記録する。
 
@@ -259,7 +309,10 @@ def apply_guard(
     if guard is None:
         return None
 
-    verdict = guard.check(run, event, state, substate, phase, reason, worker)
+    verdict = guard.check(
+        run, event, state, substate, phase, reason, worker,
+        finding_code, finding_subject,
+    )
     if verdict is None:
         return None
     if (run.current_state, verdict.event) not in TRANSITIONS:

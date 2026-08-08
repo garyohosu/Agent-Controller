@@ -150,6 +150,19 @@ class StageResult(BaseModel):
     Controller 側で「1 つ上の工程だろう」と推測しない。指定が無ければ受け付けない。
     """
 
+    finding_code: str | None = None
+    """指摘の種別（RESPONSIBILITY_MISMATCH, TEST_FAILURE など）。
+
+    reason は人間が読む自由文なので、同じ問題でも毎回文言が変わる。
+    「同じ失敗が直っていない」の機械判定にはこちらを使う（§17-9）。
+    """
+
+    finding_subject: str | None = None
+    """指摘の対象（OrderService, tests/test_order.py::test_cancel など）。"""
+
+    finding_category: str | None = None
+    """分類（DESIGN_CONSISTENCY など）。指紋には使わず、人間向けの手がかり。"""
+
 
 PhaseHandler = Callable[[RunState], StageResult]
 
@@ -440,6 +453,8 @@ def _make_phase_node(
             phase,
             result.reason,
             transition.worker,
+            result.finding_code,
+            result.finding_subject,
         )
         return run.model_dump()
 

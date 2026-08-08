@@ -49,7 +49,7 @@ CLASS_STAGE = DocumentStageConfig(
 
 
 def make_run(**overrides) -> RunState:
-    return RunState(project_id="p", run_id="run-guard", **overrides)
+    return RunState(**{"project_id": "p", "run_id": "run-guard", **overrides})
 
 
 class TestCounterLimits:
@@ -392,3 +392,156 @@ class TestDesignDriver:
 
         assert final.current_state == State.IMPLEMENT
         assert logger.store.fingerprints(final.run_id) == {}
+
+
+class TestStructuredFindings:
+    """機械判定は構造化項目、人間向けは reason（§17-9 の宿題）。"""
+
+    def test_the_same_finding_worded_differently_is_one_fingerprint(self) -> None:
+        """実 AI を繋いで実際に起きた問題。reason は毎回違う文になる。"""
+        first = failure_fingerprint(
+            State.DESIGN,
+            DocumentStage.CLASS,
+            Phase.REVIEW_LIGHT,
+            Event.LOCAL_FIX,
+            "OrderService is doing two jobs at once",
+            finding_code="RESPONSIBILITY_MISMATCH",
+            finding_subject="OrderService",
+        )
+        second = failure_fingerprint(
+            State.DESIGN,
+            DocumentStage.CLASS,
+            Phase.REVIEW_LIGHT,
+            Event.LOCAL_FIX,
+            "the responsibilities of OrderService remain mixed",
+            finding_code="RESPONSIBILITY_MISMATCH",
+            finding_subject="OrderService",
+        )
+        assert first == second
+
+    def test_a_different_subject_is_a_different_fingerprint(self) -> None:
+        base = dict(
+            state=State.DESIGN,
+            substate=DocumentStage.CLASS,
+            phase=Phase.REVIEW_LIGHT,
+            event=Event.LOCAL_FIX,
+            reason="same wording",
+            finding_code="RESPONSIBILITY_MISMATCH",
+        )
+        assert failure_fingerprint(**base, finding_subject="OrderService") != (
+            failure_fingerprint(**base, finding_subject="PaymentService")
+        )
+
+    def test_codes_are_normalised(self) -> None:
+        assert failure_fingerprint(
+            State.TEST, None, None, Event.FAIL, "x",
+            finding_code=" test_failure ", finding_subject="a::b",
+        ) == failure_fingerprint(
+            State.TEST, None, None, Event.FAIL, "y",
+            finding_code="TEST_FAILURE", finding_subject="A::B",
+        )
+
+    def test_missing_code_falls_back_to_reason(self) -> None:
+        """finding_code 抜きを拒否しない。検出が鈍るだけの方がまし。"""
+        same = failure_fingerprint(
+            State.TEST, None, None, Event.FAIL, "boom"
+        )
+        assert same == failure_fingerprint(State.TEST, None, None, Event.FAIL, "BOOM ")
+        assert same != failure_fingerprint(State.TEST, None, None, Event.FAIL, "other")
+
+    def test_free_text_alone_no_longer_stops_a_repeating_failure(
+        self, logger: TransitionLogger
+    ) -> None:
+        """同じ指摘を毎回違う言い方で返す Reviewer でも NO_PROGRESS が働く。"""
+        run = make_run(current_state=State.DESIGN)
+        logger.store.save_run(run)
+
+        wordings = [
+            "OrderService mixes ordering and billing",
+            "billing logic still sits inside OrderService",
+            "OrderService has two responsibilities",
+            "the split of OrderService is still wrong",
+        ]
+        handlers = ScriptedPhaseHandlers(
+            {
+                Phase.GENERATE: [Event.DONE],
+                Phase.REVIEW_LIGHT: [
+                    StageResult(
+                        event=Event.LOCAL_FIX,
+                        worker=Worker.CODEX_CLI,
+                        reason=wording,
+                        finding_code="RESPONSIBILITY_MISMATCH",
+                        finding_subject="OrderService",
+                    )
+                    for wording in wordings
+                ],
+                Phase.FIX: [Event.DONE],
+            }
+        ).as_handlers()
+
+        final = run_document_stage(
+            run,
+            CLASS_STAGE,
+            logger,
+            handlers,
+            guard=LoopGuard(logger.store, GuardLimits(max_same_fingerprint=3)),
+        )
+
+        assert final.current_state == State.HUMAN_REQUIRED
+        last = logger.history(final.run_id)[-1]
+        assert last.event == Event.NO_PROGRESS
+        assert "RESPONSIBILITY_MISMATCH on OrderService" in (last.reason or "")
+
+    def test_codes_catch_it_sooner_than_free_text(
+        self, logger: TransitionLogger
+    ) -> None:
+        """対照実験。code が無いと、言い換えられている間は別の失敗として数えられる。
+
+        止まらないわけではない（いずれ同じ文言を繰り返すので上限に達する）が、
+        そこまでに無駄なレビューと修正を何周も回すことになる。
+        """
+        wordings = [
+            "OrderService mixes ordering and billing",
+            "billing logic still sits inside OrderService",
+            "OrderService has two responsibilities",
+            "the split of OrderService is still wrong",
+        ]
+
+        def reviews_until_the_guard_fires(with_codes: bool) -> int:
+            run = make_run(current_state=State.DESIGN, run_id=f"codes-{with_codes}")
+            logger.store.save_run(run)
+            extra = (
+                {"finding_code": "RESPONSIBILITY_MISMATCH", "finding_subject": "OrderService"}
+                if with_codes
+                else {}
+            )
+            handlers = ScriptedPhaseHandlers(
+                {
+                    Phase.GENERATE: [Event.DONE],
+                    Phase.REVIEW_LIGHT: [
+                        StageResult(event=Event.LOCAL_FIX, reason=wording, **extra)
+                        for wording in wordings
+                    ],
+                    Phase.FIX: [Event.DONE],
+                }
+            ).as_handlers()
+
+            final = run_document_stage(
+                run,
+                CLASS_STAGE,
+                logger,
+                handlers,
+                guard=LoopGuard(logger.store, GuardLimits(max_same_fingerprint=3)),
+            )
+            assert final.current_state == State.HUMAN_REQUIRED
+            return sum(
+                1
+                for item in logger.history(run.run_id)
+                if item.event == Event.LOCAL_FIX
+            )
+
+        with_codes = reviews_until_the_guard_fires(True)
+        without_codes = reviews_until_the_guard_fires(False)
+
+        assert with_codes == 4
+        assert without_codes > with_codes
