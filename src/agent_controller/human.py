@@ -90,14 +90,17 @@ def answer_question(
     qanda = QandaFile(store, workspace)
     qanda.answer(question, answer.strip(), answered_by=Worker.HUMAN)
 
-    # 復帰位置は run が持っているものを正とする。CANNOT_ANSWER は「同じ場所へ
-    # 戻ってくる中断」なので、stage を抜けたときの return_phase が残っている。
-    # questions 行は突き合わせ用で、食い違ったらログに残して run 側を採る。
+    # 復帰位置は questions 行を正とする。run が持っているのは「stage を抜けた場所」
+    # （= QANDA）だが、そこへ戻しても答え終わった質問をもう一度探すだけになる。
+    # 戻るべきなのは質問した工程。実 AI で 1 周させて分かった。
     notes = [f"question={question.question_id}", "answered_by=HUMAN"]
-    if question.return_phase is not None and run.return_phase != question.return_phase:
-        notes.append(
-            f"resume mismatch: run={run.return_phase} question={question.return_phase}"
-        )
+    if question.return_phase is not None:
+        if run.return_phase != question.return_phase:
+            notes.append(
+                f"resume {question.return_phase.value} (asked there; "
+                f"run was suspended in {run.return_phase.value if run.return_phase else '-'})"
+            )
+        run.return_phase = question.return_phase
 
     if upstream_target is not None:
         # 上位成果物が変わるなら、止まっていた phase へは戻さない。

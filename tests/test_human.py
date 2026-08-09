@@ -149,8 +149,8 @@ class TestAnswer:
         assert transition.event == Event.HUMAN_ANSWER
         assert run.current_state == State.DESIGN
         assert run.substate == DocumentStage.CLASS
-        # CANNOT_ANSWER は「同じ場所へ戻ってくる中断」なので位置が残っている。
-        assert run.return_phase == Phase.QANDA
+        # 戻るのは質問した工程。QANDA へ戻しても、答え終わった質問を探すだけ。
+        assert run.return_phase == Phase.REVIEW_LIGHT
         store.close()
 
     def test_the_answer_reaches_the_markdown(self, tmp_path: Path) -> None:
@@ -174,6 +174,8 @@ class TestAnswer:
         assert last.event == Event.HUMAN_ANSWER
         assert "question=Q-0001" in (last.reason or "")
         assert "answered_by=HUMAN" in (last.reason or "")
+        # 中断位置と質問位置が違うことは残す。
+        assert "asked there" in (last.reason or "")
         assert last.from_state == State.HUMAN_REQUIRED
         assert last.to_state == State.DESIGN
         store.close()

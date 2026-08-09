@@ -26,6 +26,7 @@ current_state + event -> next_state
 - DB スキーマのマイグレーション
 - 薄い Worker interface と Claude Code / Codex CLI の Adapter
 - QandA.md（Agent 間の問い合わせチャネル）
+- 人間の回答から run を再開する CLI
 
 遷移表は 2 段に分かれている。トップレベルが `(State, Event) -> State`、
 Document Stage の中が `(Phase, Event) -> Phase`。
@@ -47,8 +48,25 @@ Markdown は人間と AI が読む成果物、SQLite は制御状態。QandA.md 
 SQLite から生成し、読み戻さない。
 
 Codex CLI で SPEC.md → USECASE.md の 1 stage を実接続で通してある。
-Git checkpoint / rollback、COMPLETE gate、HUMAN_REQUIRED からの復帰は未実装。
-詳細は `instructions/result-2026-08-09-007.md` を参照。
+Worker は正式な成果物に根拠が無い判断を推測で埋めない。決まっていないことは
+QUESTION として State Machine 上に現れ、AI 同士で解決できなければ人間へ上がる。
+
+```bash
+agent-controller --run RUN answer Q-0001 "禁止する" [--upstream SPEC]
+```
+
+Codex が質問し Claude が回答して工程が続く往復を実接続で確認済み。
+Git checkpoint / rollback と COMPLETE gate 本体は未実装。
+詳細は `instructions/result-2026-08-09-009.md` を参照。
+
+## CLI
+
+```bash
+agent-controller --run RUN status      # run の位置と COMPLETE を阻むもの
+agent-controller --run RUN questions   # 質問一覧
+agent-controller --run RUN show        # QandA.md
+agent-controller --run RUN answer ...  # 人間が答える
+```
 
 ## セットアップ
 
@@ -73,3 +91,6 @@ uv run pytest
 - `instructions/result-2026-08-09-005.md` — 実施結果（§17-10）
 - `instructions/result-2026-08-09-006.md` — 実施結果（§17-11 / §17-12 の一部）
 - `instructions/result-2026-08-09-007.md` — 実施結果（入口の検査 / 指紋の構造化 / §17-13）
+- `instructions/instruction-2026-08-09-001.md` / `-002.md` — 人間回答と実 Q&A の指示書
+- `instructions/result-2026-08-09-008.md` — 実施結果（人間回答経路と実 AI Q&A）
+- `instructions/result-2026-08-09-009.md` — 実施結果（推測禁止 Directive と指紋修正）
