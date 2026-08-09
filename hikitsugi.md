@@ -5,11 +5,12 @@
 
 ---
 
-Instruction 009 adds structured question classification, SQLite-backed provisional
-decisions, batched human answers, and a normal CompleteGate blocker for unapproved
-provisional decisions. The corrected Codex-only live E2E reached COMPLETE in an
-isolated scratch Git workspace through the real TEST and REVIEW paths. Evidence is
-in `instructions/result-2026-08-09-016.md`.
+Instruction 010 completed the final implementation-gap audit. REVIEW findings now
+become the next IMPLEMENT directive, README freshness is checked by CompleteGate,
+and DOC_SYNC accepts a controller-owned sync callback. Offline verification is
+`269 passed, 4 skipped`. The post-audit live E2E reached REVIEW QUESTION but Codex
+timed out before answering; COMPLETE is therefore not claimed for this audit. See
+`instructions/result-2026-08-09-017.md`.
 
 ## COMPLETE gate status
 

@@ -1,10 +1,11 @@
 # Agent Controller
 
-Instruction 009 adds structured question classification, SQLite-backed provisional
-decisions, batched human answers, and a normal CompleteGate blocker for unapproved
-provisional decisions. The corrected Codex-only live E2E reached COMPLETE in an
-isolated scratch Git workspace through DESIGN → IMPLEMENT → TEST → REVIEW → DOC_SYNC.
-Evidence: `instructions/result-2026-08-09-016.md`.
+Instruction 010 completed the final implementation-gap audit. REVIEW findings now
+become the next IMPLEMENT directive, README freshness is checked by CompleteGate,
+and DOC_SYNC accepts a controller-owned sync callback. Offline verification is
+`269 passed, 4 skipped`. The audit result is
+`instructions/result-2026-08-09-017.md`; the post-audit live E2E remains limited by
+a Codex REVIEW QUESTION timeout and is not claimed as complete.
 
 ## COMPLETE gate (§17-15)
 

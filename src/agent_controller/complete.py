@@ -158,6 +158,16 @@ class CompleteGate:
                 artifact=ArtifactKind.README,
                 status=readme.status if readme else None,
             ))
+        elif code is not None:
+            readme_time = _parse_time(readme.updated_at)
+            code_time_for_readme = _parse_time(code.updated_at)
+            if readme_time is not None and code_time_for_readme is not None and readme_time < code_time_for_readme:
+                blockers.append(CompleteBlocker(
+                    code=CompleteBlockerCode.README_NOT_SYNCED,
+                    detail="README is older than the current CODE revision",
+                    artifact=ArtifactKind.README,
+                    status=readme.status,
+                ))
 
         try:
             dirty = bool(self._git("status", "--porcelain=v1"))

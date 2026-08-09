@@ -56,6 +56,31 @@ class FakeWorker:
         return WorkerResult(event=self.event)
 
 
+class FindingWorker:
+    def __init__(self, name: Worker, root: Path, *, review: bool = False) -> None:
+        self.name = name
+        self.root = root
+        self.review = review
+        self.calls = 0
+        self.seen_directives: list[str] = []
+
+    def run(self, request: WorkerRequest) -> WorkerResult:
+        self.calls += 1
+        self.seen_directives.append(request.directive)
+        if self.review:
+            if self.calls == 1:
+                return WorkerResult(
+                    event=Event.FAIL,
+                    reason="missing validation",
+                    finding_code="MISSING_VALIDATION",
+                    finding_subject="CODE.txt",
+                    finding_category="IMPLEMENTATION",
+                )
+            return WorkerResult(event=Event.PASS)
+        (self.root / "CODE.txt").write_text("implemented\n")
+        return WorkerResult(event=Event.DONE, files_changed=["CODE.txt"])
+
+
 def test_wired_main_graph_reaches_complete(tmp_path: Path) -> None:
     root = pushed_repo(tmp_path)
     with Store(tmp_path / "controller.db") as store:
@@ -107,3 +132,44 @@ def test_wired_graph_does_not_complete_with_a_gate_blocker(tmp_path: Path) -> No
         with pytest.raises(CompleteGateError):
             run_graph(run, logger, handlers, complete_gate=CompleteGate(store, root))
         assert logger.history("r")[-1].to_state == State.DOC_SYNC
+
+
+def test_review_finding_becomes_next_implementer_directive(tmp_path: Path) -> None:
+    root = pushed_repo(tmp_path)
+    with Store(tmp_path / "controller.db") as store:
+        logger = TransitionLogger(store)
+        implementer = FindingWorker(Worker.CODEX_CLI, root)
+        reviewer = FindingWorker(Worker.CLAUDE_CODE, root, review=True)
+        run = RunState(project_id="p", run_id="r")
+        store.save_run(run)
+        handlers = wired_handlers(
+            logger,
+            workspace=root,
+            implementer=implementer,
+            reviewer=reviewer,
+            test_runner=lambda current: 0,
+        )
+        final = run_graph(run, logger, handlers, complete_gate=CompleteGate(store, root))
+        assert final.current_state == State.COMPLETE
+        assert reviewer.calls == 2
+        assert any("MISSING_VALIDATION" in directive for directive in implementer.seen_directives)
+
+
+def test_doc_sync_can_run_controller_owned_readme_sync(tmp_path: Path) -> None:
+    root = pushed_repo(tmp_path)
+    with Store(tmp_path / "controller.db") as store:
+        logger = TransitionLogger(store)
+        calls: list[str] = []
+        run = RunState(project_id="p", run_id="r")
+        store.save_run(run)
+        handlers = wired_handlers(
+            logger,
+            workspace=root,
+            implementer=FakeWorker(Worker.CODEX_CLI, root, Event.DONE),
+            reviewer=FakeWorker(Worker.CLAUDE_CODE, root, Event.PASS),
+            test_runner=lambda current: 0,
+            readme_sync=lambda current, workspace: calls.append(str(workspace)) or "NOT_REQUIRED",
+        )
+        final = run_graph(run, logger, handlers, complete_gate=CompleteGate(store, root))
+        assert final.current_state == State.COMPLETE
+        assert calls == [str(root.resolve())]

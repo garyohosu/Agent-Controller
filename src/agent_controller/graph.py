@@ -34,7 +34,8 @@ from agent_controller.models import (
     Worker,
 )
 from agent_controller.transition_log import TransitionLogger
-from agent_controller.worker import WorkerAdapter, phase_handlers_from_worker
+from agent_controller.document_stage import allowed_stage_events
+from agent_controller.worker import PHASE_DIRECTIVES, WorkerAdapter, phase_handlers_from_worker
 from agent_controller.qanda import QandaFile
 
 EXECUTABLE_STATES: tuple[State, ...] = (
@@ -61,6 +62,12 @@ class StageResult(BaseModel):
     worker: Worker | None = None
     reason: str | None = None
     handled: bool = False
+    upstream_target: Any | None = None
+    finding_code: str | None = None
+    finding_subject: str | None = None
+    finding_category: str | None = None
+    question: str | None = None
+    answer: str | None = None
     decision_class: str | None = None
     provisional_answer: str | None = None
     risk: str | None = None
@@ -130,12 +137,14 @@ def wired_handlers(
     readme_status: str = "NOT_REQUIRED",
     design_stages: list | None = None,
     qanda: Any | None = None,
+    readme_sync: Callable[[RunState, Path], str] | None = None,
 ) -> dict[State, StageHandler]:
     """Build the real Main Graph handlers from existing Controller components."""
     workspace = str(Path(workspace).resolve())
     git = git if git is not None else GitCheckpointManager(workspace, logger.store)
     test_runner = test_runner or (lambda run: _default_test_runner(run, workspace))
     qanda = qanda if qanda is not None else QandaFile(logger.store, workspace)
+    review_directives: dict[str, str] = {}
 
     def design_handler(run: RunState) -> StageResult:
         updated = run_design(
@@ -155,11 +164,21 @@ def wired_handlers(
             return StageResult(event=run.last_event or Event.WORKER_ERROR, handled=True)
         return StageResult(event=Event.PASS, role=Role.CONTROLLER)
 
+    def idle_handler(run: RunState) -> StageResult:
+        return StageResult(event=Event.START, role=Role.CONTROLLER, reason="start Main Graph")
+
     def implement_handler(run: RunState) -> StageResult:
         if implementer is None:
             return StageResult(event=Event.WORKER_ERROR, reason="IMPLEMENT worker is not configured")
         try:
-            handlers = phase_handlers_from_worker(implementer, workspace, [], "CODE", git=git)
+            directives = None
+            review_directive = review_directives.pop(run.run_id, None)
+            if review_directive:
+                directives = dict(PHASE_DIRECTIVES)
+                directives[Phase.GENERATE] = review_directive
+            handlers = phase_handlers_from_worker(
+                implementer, workspace, [], "CODE", git=git, directives=directives
+            )
             result = handlers[Phase.GENERATE](run)
             if result.event == Event.QUESTION and qanda is not None:
                 question = qanda.open_question(
@@ -213,6 +232,9 @@ def wired_handlers(
         return StageResult(
             event=result.event, role=result.role, worker=result.worker,
             reason=result.reason, handled=False,
+            finding_code=getattr(result, "finding_code", None),
+            finding_subject=getattr(result, "finding_subject", None),
+            finding_category=getattr(result, "finding_category", None),
             decision_class=getattr(result, "decision_class", None),
             provisional_answer=getattr(result, "provisional_answer", None),
             risk=getattr(result, "risk", None),
@@ -239,31 +261,84 @@ def wired_handlers(
             return StageResult(event=Event.WORKER_ERROR, reason="REVIEW worker is not configured")
         try:
             handlers = phase_handlers_from_worker(
-                reviewer, workspace, ["CODE"], "CODE", git=git
+                reviewer,
+                workspace,
+                ["CODE"],
+                "CODE",
+                allowed_events={
+                    Phase.REVIEW_LIGHT: [
+                        *allowed_stage_events(Phase.REVIEW_LIGHT),
+                        Event.FAIL,
+                    ]
+                },
+                git=git,
             )
             result = handlers[Phase.REVIEW_LIGHT](run)
+            if result.event == Event.QUESTION and qanda is not None:
+                question = qanda.open_question(
+                    run,
+                    question=result.question or result.reason or "(no question text)",
+                    context=result.reason,
+                    asked_role=result.role,
+                    asked_worker=result.worker,
+                )
+                director = phase_handlers_from_worker(
+                    reviewer,
+                    workspace,
+                    ["CODE", "QandA.md"],
+                    "CODE",
+                    qanda=qanda,
+                    git=git,
+                )[Phase.QANDA](run)
+                decision_class = getattr(director, "decision_class", None)
+                if director.event in (Event.DONE, Event.LOCAL_FIX) and decision_class == "LOW_RISK_REVERSIBLE":
+                    qanda.provisional_decision(
+                        question,
+                        getattr(director, "provisional_answer", None)
+                        or director.answer
+                        or director.reason
+                        or "(provisional)",
+                        classification=decision_class,
+                        risk=getattr(director, "risk", None) or "LOW",
+                        reversible=getattr(director, "reversible", None),
+                        affected_artifacts=getattr(director, "affected_artifacts", []),
+                        blocking_scope=getattr(director, "blocking_scope", None),
+                        recommended_human_action=getattr(director, "recommended_human_action", None),
+                    )
+                    result = handlers[Phase.REVIEW_LIGHT](run)
+                elif director.event in (Event.DONE, Event.LOCAL_FIX):
+                    qanda.answer(question, director.answer or director.reason or "(answered)", answered_by=director.worker)
+                    result = handlers[Phase.REVIEW_LIGHT](run)
+                else:
+                    qanda.escalate_to_human(question, director.reason)
+                    return StageResult(event=Event.CANNOT_ANSWER, role=result.role, worker=result.worker, reason=director.reason)
         except Exception as error:
             return StageResult(event=Event.WORKER_ERROR, reason=f"REVIEW failed: {error}")
-        if result.event == Event.QUESTION and qanda is not None:
-            qanda.open_question(
-                run,
-                question=result.question or result.reason or "(no question text)",
-                context=result.reason,
-                asked_role=result.role,
-                asked_worker=result.worker,
+        if result.event in (Event.FAIL, Event.LOCAL_FIX, Event.SERIOUS_ISSUE):
+            review_directives[run.run_id] = (
+                "Apply only the following structured reviewer finding, then return DONE.\n"
+                f"finding_code={getattr(result, 'finding_code', None)}\n"
+                f"finding_subject={getattr(result, 'finding_subject', None)}\n"
+                f"finding_category={getattr(result, 'finding_category', None)}\n"
+                f"finding_reason={result.reason or '(no reason provided)'}\n"
+                "Do not redesign unrelated behavior."
             )
         return StageResult(
             event=result.event, role=result.role, worker=result.worker,
             reason=result.reason,
+            finding_code=getattr(result, "finding_code", None),
+            finding_subject=getattr(result, "finding_subject", None),
+            finding_category=getattr(result, "finding_category", None),
         )
 
     def doc_sync_handler(run: RunState) -> StageResult:
-        if readme_status not in {"LATEST", "NOT_REQUIRED"}:
+        status = readme_sync(run, Path(workspace)) if readme_sync is not None else readme_status
+        if status not in {"LATEST", "NOT_REQUIRED"}:
             return StageResult(event=Event.FAIL, role=Role.CONTROLLER,
                                reason="invalid structured README status")
         logger.store.save_artifact(ArtifactState(
             run_id=run.run_id, kind=ArtifactKind.README,
-            status=ArtifactStatus.VALID, path="README.md", reason=readme_status,
+            status=ArtifactStatus.VALID, path="README.md", reason=status,
         ))
         try:
             git.push()
@@ -274,10 +349,10 @@ def wired_handlers(
                 reason=f"git push failed: {error}",
             )
         return StageResult(event=Event.PASS, role=Role.CONTROLLER,
-                           reason=f"README={readme_status}")
+                           reason=f"README={status}")
 
     return {
-        State.IDLE: stub_handlers()[State.IDLE],
+        State.IDLE: idle_handler,
         State.DESIGN: design_handler,
         State.IMPLEMENT: implement_handler,
         State.TEST: test_handler,

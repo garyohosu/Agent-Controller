@@ -144,6 +144,18 @@ def test_dirty_and_not_pushed_are_git_blockers(tmp_path: Path) -> None:
         assert CompleteBlockerCode.GIT_NOT_PUSHED in codes(CompleteGate(store, root).check(run))
 
 
+def test_readme_older_than_code_is_not_fresh(tmp_path: Path) -> None:
+    root = pushed_repo(tmp_path)
+    with Store(tmp_path / "controller.db") as store:
+        run = seed_ready(store, root)
+        code = store.artifacts("r")[ArtifactKind.CODE]
+        readme = store.artifacts("r")[ArtifactKind.README]
+        store.save_artifact(readme)
+        code.updated_at = datetime.now(timezone.utc)
+        store.save_artifact(code)
+        assert CompleteBlockerCode.README_NOT_SYNCED in codes(CompleteGate(store, root).check(run))
+
+
 def test_complete_transition_requires_gate(tmp_path: Path) -> None:
     root = pushed_repo(tmp_path)
     with Store(tmp_path / "controller.db") as store:

@@ -217,14 +217,6 @@ def complete_blockers(store: Store, run: RunState) -> list[str]:
     return blockers
 
 
-COMPLETE_TODO: tuple[str, ...] = (
-    "design artifacts all VALID",
-    "CODE latest",
-    "README latest",
-    "TEST PASS",
-    "REVIEW PASS",
-    "working tree clean",
-    "committed",
-    "pushed",
-)
+COMPLETE_TODO: tuple[str, ...] = ()
+"""Legacy compatibility constant; completion checks live in CompleteGate."""
 """§15 の残りの完了条件。まだ検査していない。§17-14 / §17-15 の担当。"""
