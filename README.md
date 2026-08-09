@@ -119,3 +119,9 @@ uv run pytest
 - `instructions/instruction-2026-08-09-001.md` / `-002.md` — 人間回答と実 Q&A の指示書
 - `instructions/result-2026-08-09-008.md` — 実施結果（人間回答経路と実 AI Q&A）
 - `instructions/result-2026-08-09-009.md` — 実施結果（推測禁止 Directive と指紋修正）
+-
+## 2026-08-09 最終安定化（instruction-012）
+
+Main Graph の scripted E2E と Codex 基準の実AI E2E は `IDLE → DESIGN → IMPLEMENT → TEST → REVIEW → DOC_SYNC → COMPLETE` まで確認済みです。Controller は Role ごとの既定 routing（Director / Implementer / Reviewer / Answerer）と、Worker invocation の診断 JSONL（timeout 層、exit code、実行時間、prompt サイズ、stdout/stderr末尾）を提供します。
+
+Claude / Grok / agy の実行可否は環境依存です。現在の受入構成では Codex を実装・Director・fallback先、Claude を read-only Reviewer の第一候補、Grok を read-only Reviewer/Director/Answerer候補、agy は headless CLI の権限契約が整うまで未接続としています。Claude の timeout や Q&A の再質問は隠さず `RESULT_PRODUCED_WITH_LIMITATIONS` として記録します。詳細は `instructions/result-2026-08-09-019.md` を参照してください。

@@ -51,6 +51,7 @@ from agent_controller.worker import (
     WorkerRouter,
     phase_handlers_from_worker,
     phase_handlers_for_stages,
+    role_router_from_adapters,
     validate_worker_result,
 )
 
@@ -72,6 +73,23 @@ def make_request(**overrides) -> WorkerRequest:
         allowed_events=[Event.DONE, Event.QUESTION, Event.UPSTREAM_CHANGE_REQUIRED],
     )
     return WorkerRequest(**{**defaults, **overrides})
+
+
+def test_default_role_router_declares_provider_order() -> None:
+    codex = CodexCliWorker(runner=fake_runner('{"event": "DONE"}'))
+    claude = ClaudeCodeWorker(runner=fake_runner('{"event": "PASS"}'))
+    grok = GrokCliWorker(runner=fake_runner('{"event": "PASS"}'))
+    router = role_router_from_adapters({
+        Worker.CODEX_CLI: codex,
+        Worker.CLAUDE_CODE: claude,
+        Worker.GROK: grok,
+    })
+    assert [item.name for item in router.candidates_for(Role.REVIEWER)] == [
+        Worker.CLAUDE_CODE, Worker.CODEX_CLI, Worker.GROK
+    ]
+    assert [item.name for item in router.candidates_for(Role.IMPLEMENTER)] == [
+        Worker.CODEX_CLI, Worker.CLAUDE_CODE
+    ]
 
 
 @pytest.fixture

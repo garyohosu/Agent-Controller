@@ -185,6 +185,34 @@ class WorkerRouter:
         return list(self._candidates.get(role, []))
 
 
+# Default ordering is deliberately role-specific.  Read-only reviewers may
+# fall back across providers, while write-capable implementation remains
+# Codex-first until another adapter has an explicit write contract.
+DEFAULT_ROLE_PRIORITY: dict[Role, tuple[Worker, ...]] = {
+    Role.DIRECTOR: (Worker.CODEX_CLI, Worker.CLAUDE_CODE, Worker.GROK),
+    Role.IMPLEMENTER: (Worker.CODEX_CLI, Worker.CLAUDE_CODE),
+    Role.REVIEWER: (Worker.CLAUDE_CODE, Worker.CODEX_CLI, Worker.GROK),
+    Role.ANSWERER: (Worker.CODEX_CLI, Worker.CLAUDE_CODE, Worker.GROK),
+}
+
+
+def role_router_from_adapters(
+    adapters: dict[Worker, WorkerAdapter],
+    priorities: dict[Role, tuple[Worker, ...]] | None = None,
+) -> WorkerRouter:
+    """Build the formal role route, omitting unavailable adapters.
+
+    Agy is intentionally not in the default route until its headless CLI
+    contract is usable in the execution environment.
+    """
+    selected = priorities or DEFAULT_ROLE_PRIORITY
+    return WorkerRouter({
+        role: [adapters[name] for name in order if name in adapters]
+        for role, order in selected.items()
+        if any(name in adapters for name in order)
+    })
+
+
 class WorkerError(BaseModel):
     """Worker 出力を受け付けられなかった理由。"""
 
@@ -441,7 +469,7 @@ def phase_handlers_from_worker(
     def make(phase: Phase) -> PhaseHandler:
         role = PHASE_ROLES[phase]
         candidates = router.candidates_for(role) if router else worker_map[role]
-        adapter = candidates[0]
+        adapter = candidates[0] if candidates else None
         permitted = (
             allowed_events[phase]
             if allowed_events is not None and phase in allowed_events
@@ -456,9 +484,16 @@ def phase_handlers_from_worker(
                     return StageResult(
                         event=Event.WORKER_ERROR,
                         role=role,
-                        worker=adapter.name,
+                        worker=adapter.name if adapter is not None else None,
                         reason=f"git checkpoint unavailable: {error}",
                     )
+
+            if not candidates:
+                return StageResult(
+                    event=Event.WORKER_ERROR,
+                    role=role,
+                    reason=f"no worker candidate is configured for role {role.value}",
+                )
 
             directive = directives[phase]
             documents = list(input_artifacts)

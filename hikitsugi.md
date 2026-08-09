@@ -268,3 +268,9 @@ instructions/result-2026-08-09-009.md      推測禁止と指紋の話
 
 `result-2026-08-08-001.md` から順に読むと、なぜこの形になったかが追える。
 急ぐなら 006 と 009 だけでよい。
+-
+## 2026-08-09 最終安定化の引き継ぎ
+
+Codex基準の実AI Main Graph E2Eは COMPLETE 到達を確認済み。Role routing は Director / Implementer / Reviewer / Answerer ごとに固定し、Reviewer は Claude → Codex → Grok の順でfallbackします。Worker timeout と外側Harness timeoutは別々に診断し、各 invocation の診断JSONLをGit workspace外へ保存します。
+
+4AIの受入状況は、Codexが安定した実装・テスト・レビュー・Director経路、Claude/Grokがread-only候補、agyが環境権限解消待ちです。Claude timeout、Grok timeout、agyのheadless permission error、Q&A再質問による未完走は既知制限であり、COMPLETEを偽装しません。最終判定と証拠は `instructions/result-2026-08-09-019.md` に集約します。
