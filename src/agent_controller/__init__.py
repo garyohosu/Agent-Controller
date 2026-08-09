@@ -26,6 +26,11 @@ from agent_controller.human import (
     answer_question,
     complete_blockers,
 )
+from agent_controller.git_checkpoint import (
+    DirtyWorkingTreeError,
+    GitCheckpointError,
+    GitCheckpointManager,
+)
 from agent_controller.impact import (
     ImpactAnalyzer,
     ImpactResult,
@@ -82,8 +87,11 @@ __all__ = [
     "CodexCliWorker",
     "DocumentStage",
     "DocumentStageConfig",
+    "DirtyWorkingTreeError",
     "Event",
     "GuardLimits",
+    "GitCheckpointError",
+    "GitCheckpointManager",
     "GuardVerdict",
     "ImpactAnalyzer",
     "ImpactResult",

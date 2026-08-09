@@ -38,6 +38,7 @@ from agent_controller.models import (
     Worker,
 )
 from agent_controller.qanda import QANDA_FILENAME, QandaFile
+from agent_controller.git_checkpoint import GitCheckpointError, GitCheckpointManager
 
 PHASE_ROLES: dict[Phase, Role] = {
     Phase.GENERATE: Role.IMPLEMENTER,
@@ -335,6 +336,7 @@ def phase_handlers_from_worker(
     allowed_events: dict[Phase, list[Event]] | None = None,
     directives: dict[Phase, str] | None = None,
     qanda: QandaFile | None = None,
+    git: GitCheckpointManager | None = None,
 ) -> dict[Phase, PhaseHandler]:
     """Worker を Document Stage の phase handler に変換する。
 
@@ -356,6 +358,17 @@ def phase_handlers_from_worker(
         )
 
         def handler(run: RunState) -> StageResult:
+            if git is not None:
+                try:
+                    git.begin(run)
+                except GitCheckpointError as error:
+                    return StageResult(
+                        event=Event.WORKER_ERROR,
+                        role=role,
+                        worker=adapter.name,
+                        reason=f"git checkpoint unavailable: {error}",
+                    )
+
             directive = directives[phase]
             documents = list(input_artifacts)
             if phase == Phase.QANDA and qanda is not None:
@@ -374,6 +387,38 @@ def phase_handlers_from_worker(
                 expected_output_schema=WORKER_OUTPUT_SCHEMA,
             )
             result = adapter.run(request)
+
+            problem = validate_worker_result(result, request)
+            if problem is not None:
+                result.event = Event.WORKER_ERROR
+                result.reason = f"{problem.message} | raw: {problem.raw_output[:200]}"
+
+            if git is not None and result.event in (
+                Event.WORKER_ERROR,
+                Event.WORKER_RESOURCE_LIMIT,
+            ):
+                try:
+                    actual = git.verified_files_changed(result.files_changed)
+                    git.rollback(run.checkpoint_commit or git.head())
+                    result.reason = (
+                        f"{result.reason or result.event.value}; "
+                        f"rolled back {actual or 'no tracked changes'} to "
+                        f"{run.checkpoint_commit}"
+                    )
+                except GitCheckpointError as error:
+                    result.event = Event.WORKER_ERROR
+                    result.reason = f"rollback failed: {error}"
+            elif git is not None:
+                try:
+                    actual = git.verified_files_changed(result.files_changed)
+                    git.commit_success(result.event)
+                    result.reason = (
+                        f"{result.reason or result.event.value}; "
+                        f"git files_changed={actual or 'none'}"
+                    )
+                except GitCheckpointError as error:
+                    result.event = Event.WORKER_ERROR
+                    result.reason = f"git success handling failed: {error}"
 
             problem = validate_worker_result(result, request)
             if problem is not None:
