@@ -8,6 +8,7 @@ from agent_controller.complete import (
     CompleteGate,
     CompleteGateError,
 )
+from agent_controller.acceptance import ensure_todo_contracts, verify_contract, verify_contracts
 from agent_controller.design import (
     default_design_stages,
     design_artifact_statuses,
@@ -52,6 +53,8 @@ from agent_controller.models import (
     ArtifactKind,
     ArtifactState,
     ArtifactStatus,
+    AcceptanceContract,
+    ContractStatus,
     DocumentStage,
     Event,
     Phase,
@@ -93,6 +96,8 @@ __all__ = [
     "ArtifactKind",
     "ArtifactState",
     "ArtifactStatus",
+    "AcceptanceContract",
+    "ContractStatus",
     "ClaudeCodeWorker",
     "AgyCliWorker",
     "CompleteBlocker",
@@ -100,6 +105,9 @@ __all__ = [
     "CompleteCheckResult",
     "CompleteGate",
     "CompleteGateError",
+    "ensure_todo_contracts",
+    "verify_contract",
+    "verify_contracts",
     "CodexCliWorker",
     "GrokCliWorker",
     "DocumentStage",

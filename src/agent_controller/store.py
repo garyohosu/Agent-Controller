@@ -9,6 +9,7 @@ run を再開できることを目的とする。
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -21,6 +22,8 @@ from agent_controller.migrations import migrate
 from agent_controller.models import (
     ArtifactKind,
     ArtifactState,
+    AcceptanceContract,
+    ContractStatus,
     Question,
     QuestionStatus,
     RunInput,
@@ -200,6 +203,56 @@ class Store:
         if row is None:
             return None
         return RunInput.model_validate({key: row[key] for key in row.keys()})
+
+    # -- acceptance contracts -----------------------------------------------
+
+    def save_contract(self, contract: AcceptanceContract) -> None:
+        contract.updated_at = utcnow()
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO acceptance_contracts
+                (contract_id, run_id, source_type, source_id, source_artifact,
+                 source_revision, requirement_kind, target_artifact, target_scope,
+                 verifier_kind, verifier_config, required, status, last_verified_at,
+                 evidence, actual, failure_code, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    contract.contract_id, contract.run_id, contract.source_type,
+                    contract.source_id, contract.source_artifact, contract.source_revision,
+                    contract.requirement_kind, contract.target_artifact, contract.target_scope,
+                    contract.verifier_kind, json.dumps(contract.verifier_config, ensure_ascii=False),
+                    int(contract.required), contract.status.value,
+                    contract.last_verified_at.isoformat() if contract.last_verified_at else None,
+                    contract.evidence, contract.actual, contract.failure_code,
+                    contract.created_at.isoformat(), contract.updated_at.isoformat(),
+                ),
+            )
+
+    def contracts(self, run_id: str) -> list[AcceptanceContract]:
+        rows = self._conn.execute(
+            "SELECT * FROM acceptance_contracts WHERE run_id = ? ORDER BY contract_id",
+            (run_id,),
+        ).fetchall()
+        result = []
+        for row in rows:
+            data = {key: row[key] for key in row.keys()}
+            data["verifier_config"] = json.loads(data["verifier_config"] or "{}")
+            data["required"] = bool(data["required"])
+            result.append(AcceptanceContract.model_validate(data))
+        return result
+
+    def contract(self, contract_id: str) -> AcceptanceContract | None:
+        rows = self._conn.execute(
+            "SELECT * FROM acceptance_contracts WHERE contract_id = ?", (contract_id,)
+        ).fetchall()
+        if not rows:
+            return None
+        data = {key: rows[0][key] for key in rows[0].keys()}
+        data["verifier_config"] = json.loads(data["verifier_config"] or "{}")
+        data["required"] = bool(data["required"])
+        return AcceptanceContract.model_validate(data)
 
     # -- transitions ---------------------------------------------------------
 

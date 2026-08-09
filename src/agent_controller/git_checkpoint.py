@@ -101,7 +101,11 @@ class GitCheckpointManager:
     def commit_paths(self, paths: list[str], event: Event = Event.LOCAL_FIX) -> GitObservation:
         """Commit explicitly controller-owned files, including new Q&A output."""
         existing = [path for path in paths if (self.repo / path).is_file()]
+        changed = []
         if existing:
+            probe = _run(self.repo, "status", "--porcelain=v1", "--", *existing)
+            changed = [line for line in probe.splitlines() if line.strip()]
+        if changed:
             _run(self.repo, "add", "--", *existing)
             _run(self.repo, "commit", "-m", f"controller: {event.value} metadata")
         return self.observe()

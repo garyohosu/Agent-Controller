@@ -14,12 +14,22 @@ from pathlib import Path
 from agent_controller.human import AnswerRejected, answer_batch, answer_question, complete_blockers
 from agent_controller.complete import CompleteGate
 from agent_controller.lifecycle import RunStartError, start_run, validate_workspace
+from agent_controller.git_checkpoint import GitCheckpointError, GitCheckpointManager
 from agent_controller.models import DocumentStage, QuestionStatus
 from agent_controller.qanda import render_qanda
 from agent_controller.store import Store
 from agent_controller.transition_log import TransitionLogger
 
 DEFAULT_DB = "controller.db"
+
+
+def _configure_output() -> None:
+    """Keep Windows cp932 consoles from crashing on UTF-8 Q&A content."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
 
 
 def _store(args: argparse.Namespace) -> Store:
@@ -106,6 +116,12 @@ def cmd_answer(args: argparse.Namespace) -> int:
         print(f"{question.question_id} answered")
         print(f"  -> {transition.to_state.value}"
               + (f"/{transition.to_substate.value}" if transition.to_substate else ""))
+        if args.workspace:
+            try:
+                GitCheckpointManager(args.workspace).commit_paths(["QandA.md"])
+            except GitCheckpointError:
+                # Legacy answer usage also supports a non-Git fixture workspace.
+                pass
         remaining = complete_blockers(store, run)
         if remaining:
             print("  still blocking COMPLETE: " + "; ".join(remaining))
@@ -152,6 +168,20 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_contracts(args: argparse.Namespace) -> int:
+    args.run = _require_run(args)
+    with _store(args) as store:
+        contracts = store.contracts(args.run)
+        if not contracts:
+            print(f"no acceptance contracts in run {args.run}")
+            return 0
+        for contract in contracts:
+            evidence = contract.actual or contract.evidence or "-"
+            print(f"{contract.contract_id}  {contract.status.value:<11} "
+                  f"{contract.verifier_kind:<12} {contract.target_artifact}  {evidence}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent-controller")
     parser.add_argument("--db", default=DEFAULT_DB, help="controller database")
@@ -176,7 +206,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=[stage.value for stage in DocumentStage],
         help="the answer changes this upstream document; do not resume the old phase",
     )
-    answer.add_argument("--workspace", help="where QandA.md lives")
+    answer.add_argument("--workspace", default=argparse.SUPPRESS, help="where QandA.md lives")
     answer.set_defaults(func=cmd_answer)
 
     batch = sub.add_parser("answer-batch", help="answer several human-required questions")
@@ -192,10 +222,14 @@ def build_parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status", help="where the run is")
     status.set_defaults(func=cmd_status)
 
+    contracts = sub.add_parser("contracts", help="list acceptance contracts")
+    contracts.set_defaults(func=cmd_contracts)
+
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_output()
     args = build_parser().parse_args(argv)
     if getattr(args, "workspace", None):
         args.workspace = str(Path(args.workspace))

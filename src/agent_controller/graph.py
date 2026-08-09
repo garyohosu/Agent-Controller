@@ -20,6 +20,7 @@ from pydantic import BaseModel
 
 from agent_controller.guards import LoopGuard, apply_guard
 from agent_controller.complete import CompleteGate
+from agent_controller.acceptance import ensure_todo_contracts, verify_contracts
 from agent_controller.design import default_design_stages, run_design
 from agent_controller.git_checkpoint import GitCheckpointManager
 from agent_controller.models import (
@@ -251,10 +252,24 @@ def wired_handlers(
         except OSError as error:
             return StageResult(event=Event.WORKER_ERROR, role=Role.CONTROLLER,
                                reason=f"test runner failed: {error}")
+        if exit_code != 0:
+            return StageResult(event=Event.FAIL, role=Role.CONTROLLER,
+                               reason=f"test runner exit_code={exit_code}")
+        ensure_todo_contracts(logger.store, run, workspace)
+        checked = verify_contracts(logger.store, run, workspace)
+        failures = [
+            f"{item.contract_id} {item.failure_code or item.status.value}: {item.actual or ''}"
+            for item in checked if item.required and item.status.value != "PASS"
+        ]
+        if failures:
+            return StageResult(
+                event=Event.FAIL, role=Role.CONTROLLER,
+                reason="ACCEPTANCE_CONTRACT_FAILED " + " | ".join(failures),
+            )
         return StageResult(
-            event=Event.PASS if exit_code == 0 else Event.FAIL,
+            event=Event.PASS,
             role=Role.CONTROLLER,
-            reason=f"test runner exit_code={exit_code}",
+            reason=f"test runner exit_code={exit_code}; acceptance contracts PASS",
         )
 
     def review_handler(run: RunState) -> StageResult:

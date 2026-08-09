@@ -10,6 +10,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from agent_controller.models import ArtifactKind, ArtifactStatus, Event, RunState, State
+from agent_controller.models import ContractStatus
 from agent_controller.store import Store
 
 
@@ -25,6 +26,10 @@ class CompleteBlockerCode(StrEnum):
     GIT_DIRTY = "GIT_DIRTY"
     GIT_UNCOMMITTED = "GIT_UNCOMMITTED"
     GIT_NOT_PUSHED = "GIT_NOT_PUSHED"
+    ACCEPTANCE_CONTRACT_PENDING = "ACCEPTANCE_CONTRACT_PENDING"
+    ACCEPTANCE_CONTRACT_FAILED = "ACCEPTANCE_CONTRACT_FAILED"
+    ACCEPTANCE_CONTRACT_STALE = "ACCEPTANCE_CONTRACT_STALE"
+    ACCEPTANCE_VERIFIER_UNSUPPORTED = "ACCEPTANCE_VERIFIER_UNSUPPORTED"
 
 
 class CompleteBlocker(BaseModel):
@@ -167,6 +172,31 @@ class CompleteGate:
                     detail="README is older than the current CODE revision",
                     artifact=ArtifactKind.README,
                     status=readme.status,
+                ))
+
+        contracts = self.store.contracts(run.run_id)
+        for contract in contracts:
+            if not contract.required:
+                continue
+            if contract.status is ContractStatus.PENDING:
+                blockers.append(CompleteBlocker(
+                    code=CompleteBlockerCode.ACCEPTANCE_CONTRACT_PENDING,
+                    detail=f"{contract.contract_id} has not been verified",
+                ))
+            elif contract.status is ContractStatus.FAIL:
+                blockers.append(CompleteBlocker(
+                    code=CompleteBlockerCode.ACCEPTANCE_CONTRACT_FAILED,
+                    detail=f"{contract.contract_id}: {contract.failure_code or 'verification failed'}; {contract.actual or ''}",
+                ))
+            elif contract.status is ContractStatus.STALE:
+                blockers.append(CompleteBlocker(
+                    code=CompleteBlockerCode.ACCEPTANCE_CONTRACT_STALE,
+                    detail=f"{contract.contract_id} is stale",
+                ))
+            elif contract.status is ContractStatus.UNSUPPORTED:
+                blockers.append(CompleteBlocker(
+                    code=CompleteBlockerCode.ACCEPTANCE_VERIFIER_UNSUPPORTED,
+                    detail=f"{contract.contract_id}: verifier {contract.verifier_kind} is unsupported",
                 ))
 
         try:

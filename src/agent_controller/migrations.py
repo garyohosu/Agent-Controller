@@ -163,11 +163,40 @@ _V4_STATEMENTS = [
     """,
 ]
 
+_V5_STATEMENTS = [
+    """
+    CREATE TABLE acceptance_contracts (
+        contract_id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        source_type TEXT NOT NULL,
+        source_id TEXT,
+        source_artifact TEXT,
+        source_revision TEXT,
+        requirement_kind TEXT NOT NULL,
+        target_artifact TEXT NOT NULL,
+        target_scope TEXT,
+        verifier_kind TEXT NOT NULL,
+        verifier_config TEXT NOT NULL,
+        required INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL,
+        last_verified_at TEXT,
+        evidence TEXT,
+        actual TEXT,
+        failure_code TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (run_id) REFERENCES runs (run_id)
+    )
+    """,
+    "CREATE INDEX idx_acceptance_contracts_run ON acceptance_contracts (run_id, required, status)",
+]
+
 MIGRATIONS: list[Migration] = [
     Migration(version=1, name="baseline", statements=_V1_STATEMENTS),
     Migration(version=2, name="questions", statements=_V2_STATEMENTS),
     Migration(version=3, name="question_decision_metadata", statements=_V3_STATEMENTS),
     Migration(version=4, name="run_inputs", statements=_V4_STATEMENTS),
+    Migration(version=5, name="acceptance_contracts", statements=_V5_STATEMENTS),
 ]
 
 LATEST_VERSION = max(migration.version for migration in MIGRATIONS)

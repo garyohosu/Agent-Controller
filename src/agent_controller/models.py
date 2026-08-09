@@ -323,6 +323,36 @@ class RunInput(BaseModel):
     created_at: datetime = Field(default_factory=utcnow)
 
 
+class ContractStatus(StrEnum):
+    PENDING = "PENDING"
+    PASS = "PASS"
+    FAIL = "FAIL"
+    STALE = "STALE"
+    UNSUPPORTED = "UNSUPPORTED"
+
+
+class AcceptanceContract(BaseModel):
+    contract_id: str
+    run_id: str
+    source_type: str
+    source_id: str | None = None
+    source_artifact: str | None = None
+    source_revision: str | None = None
+    requirement_kind: str
+    target_artifact: str
+    target_scope: str | None = None
+    verifier_kind: str
+    verifier_config: dict = Field(default_factory=dict)
+    required: bool = True
+    status: ContractStatus = ContractStatus.PENDING
+    last_verified_at: datetime | None = None
+    evidence: str | None = None
+    actual: str | None = None
+    failure_code: str | None = None
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
 class Transition(BaseModel):
     """状態遷移ログ 1 行（指示書 §10 の 15 項目 + to_phase）。
 
