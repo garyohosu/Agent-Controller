@@ -102,3 +102,7 @@ class GitCheckpointManager:
         """Reset tracked state to checkpoint; never run git clean."""
         _run(self.repo, "reset", "--hard", checkpoint)
         return self.observe()
+
+    def push(self) -> None:
+        """Publish Controller commits so the COMPLETE gate can verify HEAD/upstream."""
+        _run(self.repo, "push")

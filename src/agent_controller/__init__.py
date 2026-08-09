@@ -38,6 +38,7 @@ from agent_controller.git_checkpoint import (
     GitCheckpointError,
     GitCheckpointManager,
 )
+from agent_controller.graph import wired_handlers
 from agent_controller.impact import (
     ImpactAnalyzer,
     ImpactResult,
@@ -125,6 +126,7 @@ __all__ = [
     "WorkerAdapter",
     "WorkerRequest",
     "WorkerResult",
+    "wired_handlers",
     "allowed_events",
     "answer_question",
     "check_counters",

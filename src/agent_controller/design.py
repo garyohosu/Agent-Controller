@@ -232,6 +232,7 @@ def run_design(
     analyzer: ImpactAnalyzer | None = None,
     workspace: str | Path | None = None,
     qanda: QandaFile | None = None,
+    emit_completion_event: bool = True,
 ) -> RunState:
     """すべての設計成果物が VALID になるまで stage を回す。
 
@@ -272,7 +273,8 @@ def run_design(
         )
 
         if pending is None:
-            logger.record(run, Event.PASS, reason="all design artifacts valid")
+            if emit_completion_event:
+                logger.record(run, Event.PASS, reason="all design artifacts valid")
             return run
 
         run = run_document_stage(

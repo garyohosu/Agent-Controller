@@ -10,6 +10,9 @@ transitions.py の遷移表であって、node でも AI でもない。
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
+import subprocess
+import sys
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
@@ -17,8 +20,22 @@ from pydantic import BaseModel
 
 from agent_controller.guards import LoopGuard, apply_guard
 from agent_controller.complete import CompleteGate
-from agent_controller.models import Event, Role, RunState, State, Worker
+from agent_controller.design import default_design_stages, run_design
+from agent_controller.git_checkpoint import GitCheckpointManager
+from agent_controller.models import (
+    ArtifactKind,
+    ArtifactState,
+    ArtifactStatus,
+    Event,
+    Phase,
+    Role,
+    RunState,
+    State,
+    Worker,
+)
 from agent_controller.transition_log import TransitionLogger
+from agent_controller.worker import WorkerAdapter, phase_handlers_from_worker
+from agent_controller.qanda import QandaFile
 
 EXECUTABLE_STATES: tuple[State, ...] = (
     State.IDLE,
@@ -43,6 +60,7 @@ class StageResult(BaseModel):
     role: Role | None = None
     worker: Worker | None = None
     reason: str | None = None
+    handled: bool = False
 
 
 StageHandler = Callable[[RunState], StageResult]
@@ -78,6 +96,143 @@ def stub_handlers() -> dict[State, StageHandler]:
         return handler
 
     return {state: make(event) for state, event in happy_path.items()}
+
+
+def _default_test_runner(run: RunState, workspace: str) -> int:
+    del run
+    completed = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q"],
+        cwd=workspace,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return completed.returncode
+
+
+def wired_handlers(
+    logger: TransitionLogger,
+    *,
+    workspace: str | Path,
+    design_phase_handlers: dict | None = None,
+    implementer: WorkerAdapter | None = None,
+    reviewer: WorkerAdapter | None = None,
+    git: GitCheckpointManager | None = None,
+    test_runner: Callable[[RunState], int] | None = None,
+    readme_status: str = "NOT_REQUIRED",
+    design_stages: list | None = None,
+    qanda: Any | None = None,
+) -> dict[State, StageHandler]:
+    """Build the real Main Graph handlers from existing Controller components."""
+    workspace = str(Path(workspace).resolve())
+    git = git if git is not None else GitCheckpointManager(workspace, logger.store)
+    test_runner = test_runner or (lambda run: _default_test_runner(run, workspace))
+    qanda = qanda if qanda is not None else QandaFile(logger.store, workspace)
+
+    def design_handler(run: RunState) -> StageResult:
+        run_design(
+            run,
+            logger,
+            stages=design_stages or default_design_stages(),
+            handlers=design_phase_handlers,
+            workspace=workspace,
+            qanda=qanda,
+            emit_completion_event=False,
+        )
+        if run.current_state != State.DESIGN:
+            return StageResult(event=run.last_event or Event.WORKER_ERROR, handled=True)
+        return StageResult(event=Event.PASS, role=Role.CONTROLLER)
+
+    def implement_handler(run: RunState) -> StageResult:
+        if implementer is None:
+            return StageResult(event=Event.WORKER_ERROR, reason="IMPLEMENT worker is not configured")
+        try:
+            handlers = phase_handlers_from_worker(
+                implementer, workspace, [], "CODE", git=git
+            )
+            result = handlers[Phase.GENERATE](run)
+        except Exception as error:
+            return StageResult(event=Event.WORKER_ERROR, reason=f"IMPLEMENT failed: {error}")
+        if result.event == Event.QUESTION and qanda is not None:
+            qanda.open_question(
+                run,
+                question=result.question or result.reason or "(no question text)",
+                context=result.reason,
+                asked_role=result.role,
+                asked_worker=result.worker,
+            )
+        if result.event == Event.DONE:
+            logger.store.save_artifact(ArtifactState(
+                run_id=run.run_id, kind=ArtifactKind.CODE,
+                status=ArtifactStatus.VALID, path="CODE",
+            ))
+        return StageResult(
+            event=result.event, role=result.role, worker=result.worker,
+            reason=result.reason, handled=False,
+        )
+
+    def test_handler(run: RunState) -> StageResult:
+        try:
+            exit_code = test_runner(run)
+        except OSError as error:
+            return StageResult(event=Event.WORKER_ERROR, role=Role.CONTROLLER,
+                               reason=f"test runner failed: {error}")
+        return StageResult(
+            event=Event.PASS if exit_code == 0 else Event.FAIL,
+            role=Role.CONTROLLER,
+            reason=f"test runner exit_code={exit_code}",
+        )
+
+    def review_handler(run: RunState) -> StageResult:
+        if reviewer is None:
+            return StageResult(event=Event.WORKER_ERROR, reason="REVIEW worker is not configured")
+        try:
+            handlers = phase_handlers_from_worker(
+                reviewer, workspace, ["CODE"], "CODE", git=git
+            )
+            result = handlers[Phase.REVIEW_LIGHT](run)
+        except Exception as error:
+            return StageResult(event=Event.WORKER_ERROR, reason=f"REVIEW failed: {error}")
+        if result.event == Event.QUESTION and qanda is not None:
+            qanda.open_question(
+                run,
+                question=result.question or result.reason or "(no question text)",
+                context=result.reason,
+                asked_role=result.role,
+                asked_worker=result.worker,
+            )
+        return StageResult(
+            event=result.event, role=result.role, worker=result.worker,
+            reason=result.reason,
+        )
+
+    def doc_sync_handler(run: RunState) -> StageResult:
+        if readme_status not in {"LATEST", "NOT_REQUIRED"}:
+            return StageResult(event=Event.FAIL, role=Role.CONTROLLER,
+                               reason="invalid structured README status")
+        logger.store.save_artifact(ArtifactState(
+            run_id=run.run_id, kind=ArtifactKind.README,
+            status=ArtifactStatus.VALID, path="README.md", reason=readme_status,
+        ))
+        try:
+            git.push()
+        except Exception as error:
+            return StageResult(
+                event=Event.WORKER_ERROR,
+                role=Role.CONTROLLER,
+                reason=f"git push failed: {error}",
+            )
+        return StageResult(event=Event.PASS, role=Role.CONTROLLER,
+                           reason=f"README={readme_status}")
+
+    return {
+        State.IDLE: stub_handlers()[State.IDLE],
+        State.DESIGN: design_handler,
+        State.IMPLEMENT: implement_handler,
+        State.TEST: test_handler,
+        State.REVIEW: review_handler,
+        State.DOC_SYNC: doc_sync_handler,
+    }
 
 
 class ScriptedHandlers:
@@ -121,6 +276,8 @@ def _make_node(
             raise UnexpectedStateError(state, run.current_state)
 
         result = handlers[state](run)
+        if result.handled:
+            return run.model_dump()
         transition = logger.record(
             run,
             result.event,

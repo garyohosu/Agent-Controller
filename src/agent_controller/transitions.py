@@ -61,6 +61,7 @@ TRANSITIONS: Final[dict[tuple[State, Event], TransitionTarget]] = {
     (State.DESIGN, Event.ABORT_REQUESTED): State.ABORT,
     # --- IMPLEMENT ----------------------------------------------------------
     (State.IMPLEMENT, Event.DONE): State.TEST,
+    (State.IMPLEMENT, Event.QUESTION): State.HUMAN_REQUIRED,
     # QUESTION は QandA.md → Director → Implementer で IMPLEMENT 内に閉じる（§8）。
     (State.IMPLEMENT, Event.QUESTION): State.IMPLEMENT,
     (State.IMPLEMENT, Event.UPSTREAM_CHANGE_REQUIRED): State.DESIGN,
@@ -82,6 +83,7 @@ TRANSITIONS: Final[dict[tuple[State, Event], TransitionTarget]] = {
     (State.TEST, Event.ABORT_REQUESTED): State.ABORT,
     # --- REVIEW -------------------------------------------------------------
     (State.REVIEW, Event.PASS): State.DOC_SYNC,
+    (State.REVIEW, Event.QUESTION): State.HUMAN_REQUIRED,
     # 指摘は Reviewer に直接返さず、必ず Implementer の修正 → 再レビューにする（§8）。
     (State.REVIEW, Event.FAIL): State.IMPLEMENT,
     (State.REVIEW, Event.LOCAL_FIX): State.IMPLEMENT,

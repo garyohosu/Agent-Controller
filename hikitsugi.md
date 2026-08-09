@@ -11,7 +11,7 @@
 current CODE, fresh TEST and REVIEW PASS results, zero OPEN/HUMAN_REQUIRED questions,
 README LATEST or NOT_REQUIRED, and a clean committed pushed Git state. The next
 priority is wiring DESIGN / IMPLEMENT / TEST / REVIEW / DOC_SYNC in the Main Graph;
-those states remain stubbed until that work is done.
+the wired path now connects those states; deterministic default stubs remain for isolated tests.
 
 ## これは何か
 
