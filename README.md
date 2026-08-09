@@ -7,8 +7,14 @@ and question state plus Git clean/commit/push state; Markdown text and Worker pr
 are not used. `agent-controller --run RUN status` prints structured blocker codes.
 The wired Main Graph now connects IDLE → DESIGN → IMPLEMENT → TEST → REVIEW → DOC_SYNC → COMPLETE;
 the default handlers remain available as deterministic stubs for unit tests.
-Live AI E2E was attempted in an isolated scratch repository but did not reach
-COMPLETE; see `instructions/result-2026-08-09-013.md`.
+Claude Code, Codex CLI, Grok, and Antigravity (agy) adapters are available. Grok
+and agy are read-only candidates for reviewer/director/answerer roles; only the
+implementer profile is write-enabled. CLI failures retain raw/signed exit codes,
+resolved executable, elapsed time, and output tails, and reviewer fallback keeps
+the same State/Stage/Phase checkpoint. Live AI E2E was re-run in isolated scratch
+repositories but did not reach COMPLETE: Claude's live session reported disabled
+filesystem tools and the graph stopped at HUMAN_REQUIRED; see
+`instructions/result-2026-08-09-014.md`.
 
 複数の AI エージェント（Claude Code / Codex CLI など）を決定論的な State Machine で制御し、
 設計・実装・テスト・レビュー・文書同期の工程を継続的に進めるコントローラー。

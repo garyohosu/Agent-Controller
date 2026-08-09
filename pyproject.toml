@@ -26,3 +26,4 @@ packages = ["src/agent_controller"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["live: opt-in external AI contract test"]

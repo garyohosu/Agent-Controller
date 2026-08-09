@@ -13,14 +13,17 @@ from pathlib import Path
 import pytest
 
 from agent_controller.cli_worker import (
+    AgyCliWorker,
     ClaudeCodeWorker,
     CodexCliWorker,
     CommandResult,
+    GrokCliWorker,
     build_prompt,
     extract_json,
     looks_like_a_resource_limit,
     resolve_executable,
     result_from_output,
+    signed_exit_code,
 )
 from agent_controller.document_stage import (
     DocumentStageConfig,
@@ -45,6 +48,7 @@ from agent_controller.worker import (
     REVIEWER_RULE,
     WorkerRequest,
     WorkerResult,
+    WorkerRouter,
     phase_handlers_from_worker,
     validate_worker_result,
 )
@@ -314,6 +318,17 @@ class TestProcessFailures:
         assert result.event == Event.WORKER_ERROR
         assert "timed out" in (result.reason or "")
 
+    def test_success_body_with_429_is_not_resource_limit(self) -> None:
+        result = CodexCliWorker(runner=fake_runner("429 is just text")).run(make_request())
+        assert result.event == Event.WORKER_ERROR
+        assert result.diagnostic["raw_exit_code"] == 0
+
+    def test_windows_exit_code_keeps_raw_and_signed_diagnostic(self) -> None:
+        result = CodexCliWorker(runner=fake_runner(exit_code=4294967295, stderr="fatal")).run(make_request())
+        assert result.event == Event.WORKER_ERROR
+        assert signed_exit_code(4294967295) == -1
+        assert result.diagnostic["signed_exit_code"] == -1
+
 
 class TestCommands:
     def test_codex_runs_non_interactively_in_the_workspace(self, tmp_path: Path) -> None:
@@ -342,6 +357,33 @@ class TestCommands:
     def test_claude_envelope_without_result_falls_back_to_stdout(self) -> None:
         worker = ClaudeCodeWorker(runner=fake_runner('{"event": "DONE"}'))
         assert worker.run(make_request()).event == Event.DONE
+
+    def test_read_only_command_shapes(self, tmp_path: Path) -> None:
+        request = make_request(role=Role.REVIEWER, workspace=str(tmp_path), phase=Phase.REVIEW_LIGHT)
+        codex_runner = fake_runner('{"event": "PASS"}')
+        CodexCliWorker(runner=codex_runner).run(request)
+        assert "read-only" in codex_runner.calls[0][0]
+        claude_runner = fake_runner(json.dumps({"result": '{"event": "PASS"}'}))
+        ClaudeCodeWorker(runner=claude_runner).run(request)
+        assert "plan" in claude_runner.calls[0][0]
+        assert "--no-session-persistence" in claude_runner.calls[0][0]
+
+    def test_grok_envelope_text_and_command(self, tmp_path: Path) -> None:
+        runner = fake_runner(json.dumps({"text": '{"event": "PASS"}'}))
+        result = GrokCliWorker(runner=runner).run(make_request(role=Role.REVIEWER, workspace=str(tmp_path)))
+        assert result.event == Event.PASS
+        assert runner.calls[0][0][1:3] == ["--prompt-file", runner.calls[0][0][2]]
+        assert runner.calls[0][0][-2:] == ["--output-format", "json"]
+
+    def test_agy_direct_stdout_and_utf16_guard(self, tmp_path: Path) -> None:
+        runner = fake_runner('{"event": "PASS"}')
+        result = AgyCliWorker(runner=runner).run(make_request(role=Role.REVIEWER, workspace=str(tmp_path)))
+        assert result.event == Event.PASS
+        assert runner.calls[0][0][0:2] == ["agy", "--print"]
+        huge = make_request(role=Role.REVIEWER, directive="x" * 31000)
+        blocked = AgyCliWorker(runner=runner).run(huge)
+        assert blocked.event == Event.WORKER_ERROR
+        assert "UTF-16" in (blocked.reason or "")
 
 
 class TestExecutableResolution:

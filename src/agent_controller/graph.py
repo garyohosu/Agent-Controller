@@ -130,7 +130,7 @@ def wired_handlers(
     qanda = qanda if qanda is not None else QandaFile(logger.store, workspace)
 
     def design_handler(run: RunState) -> StageResult:
-        run_design(
+        updated = run_design(
             run,
             logger,
             stages=design_stages or default_design_stages(),
@@ -139,6 +139,10 @@ def wired_handlers(
             qanda=qanda,
             emit_completion_event=False,
         )
+        # run_design uses the document-stage graph and returns a new validated
+        # RunState.  Copy it back so the outer Main Graph cannot continue from
+        # a stale DESIGN object after HUMAN_REQUIRED/WAIT_RESOURCE.
+        run.__dict__.update(updated.__dict__)
         if run.current_state != State.DESIGN:
             return StageResult(event=run.last_event or Event.WORKER_ERROR, handled=True)
         return StageResult(event=Event.PASS, role=Role.CONTROLLER)

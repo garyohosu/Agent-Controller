@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 
 from agent_controller.git_checkpoint import DirtyWorkingTreeError, GitCheckpointManager
-from agent_controller.models import DocumentStage, Event, Phase, RunState, State, Worker
-from agent_controller.worker import WorkerRequest, WorkerResult, phase_handlers_from_worker
+from agent_controller.models import DocumentStage, Event, Phase, Role, RunState, State, Worker
+from agent_controller.worker import WorkerRequest, WorkerResult, WorkerRouter, phase_handlers_from_worker
 
 
 def git(repo: Path, *args: str) -> str:
@@ -111,6 +111,24 @@ def test_resource_limit_can_switch_claude_to_codex_at_same_phase(tmp_path: Path)
     resumed = second[Phase.REVIEW_LIGHT](run)
     assert resumed.event == Event.PASS
     assert resumed.worker == Worker.CODEX_CLI
+
+
+def test_router_fallback_keeps_position_and_checkpoint(tmp_path: Path) -> None:
+    root = repo(tmp_path)
+    run = RunState(project_id="p", run_id="router", current_state=State.DESIGN,
+                   substate=DocumentStage.CLASS, phase=Phase.REVIEW_LIGHT)
+    manager = GitCheckpointManager(root)
+    first = FakeWorker(Worker.CLAUDE_CODE, Event.WORKER_ERROR, root)
+    second = FakeWorker(Worker.CODEX_CLI, Event.PASS, root)
+    handler = phase_handlers_from_worker(
+        WorkerRouter({role: [first, second] for role in Role}), str(root), [], "tracked.txt", git=manager
+    )[Phase.REVIEW_LIGHT]
+    result = handler(run)
+    assert result.event == Event.PASS
+    assert result.worker == Worker.CODEX_CLI
+    assert run.current_state == State.DESIGN
+    assert run.substate == DocumentStage.CLASS
+    assert run.phase == Phase.REVIEW_LIGHT
     assert run.current_state == State.DESIGN
     assert run.substate == DocumentStage.CLASS
     assert run.phase == Phase.REVIEW_LIGHT

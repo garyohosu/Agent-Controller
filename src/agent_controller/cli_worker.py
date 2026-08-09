@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -46,6 +47,8 @@ class CommandResult(BaseModel):
     stdout: str = ""
     stderr: str = ""
     timed_out: bool = False
+    resolved_executable: str | None = None
+    elapsed_ms: int | None = None
 
 
 CommandRunner = Callable[[Sequence[str], str, int, str], CommandResult]
@@ -66,7 +69,9 @@ def resolve_executable(name: str) -> str:
 def run_command(
     argv: Sequence[str], cwd: str, timeout: int, stdin_text: str
 ) -> CommandResult:
-    argv = [resolve_executable(argv[0]), *argv[1:]]
+    resolved = resolve_executable(argv[0])
+    argv = [resolved, *argv[1:]]
+    started = time.monotonic()
     try:
         completed = subprocess.run(
             list(argv),
@@ -79,14 +84,16 @@ def run_command(
             errors="replace",
         )
     except subprocess.TimeoutExpired:
-        return CommandResult(exit_code=-1, stderr=f"timed out after {timeout}s", timed_out=True)
+        return CommandResult(exit_code=-1, stderr=f"timed out after {timeout}s", timed_out=True, resolved_executable=resolved, elapsed_ms=int((time.monotonic()-started)*1000))
     except OSError as error:  # CLI が無い、起動できない
-        return CommandResult(exit_code=-1, stderr=str(error))
+        return CommandResult(exit_code=-1, stderr=str(error), resolved_executable=resolved, elapsed_ms=int((time.monotonic()-started)*1000))
 
     return CommandResult(
         exit_code=completed.returncode,
         stdout=completed.stdout or "",
         stderr=completed.stderr or "",
+        resolved_executable=resolved,
+        elapsed_ms=int((time.monotonic()-started)*1000),
     )
 
 
@@ -132,6 +139,28 @@ def extract_json(text: str) -> dict | None:
 def looks_like_a_resource_limit(text: str) -> bool:
     lowered = text.lower()
     return any(pattern in lowered for pattern in RESOURCE_LIMIT_PATTERNS)
+
+
+def failure_is_resource_limit(stdout: str, stderr: str) -> bool:
+    """Classify only a failed invocation; a successful model body is not an error."""
+    for candidate in (stdout, stderr):
+        try:
+            payload = json.loads(candidate.strip())
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(payload, dict):
+            status = payload.get("api_error_status") or payload.get("status")
+            if status == 429 or str(payload.get("error", "")).lower() in {"quota", "rate_limit", "rate limited"}:
+                return True
+            if payload.get("is_error") and looks_like_a_resource_limit(str(payload.get("result", ""))):
+                return True
+    return looks_like_a_resource_limit(stderr)
+
+
+def signed_exit_code(raw: int | None) -> int | None:
+    if raw is None:
+        return None
+    return raw - 2**32 if raw >= 2**31 else raw
 
 
 def build_prompt(request: WorkerRequest) -> str:
@@ -198,11 +227,11 @@ def build_prompt(request: WorkerRequest) -> str:
     return "\n".join(lines)
 
 
-def result_from_output(text: str, raw: str) -> WorkerResult:
+def result_from_output(text: str, raw: str, *, classify_resource: bool = True) -> WorkerResult:
     """CLI の出力を WorkerResult にする。壊れていても例外にしない。"""
     payload = extract_json(text)
     if payload is None:
-        if looks_like_a_resource_limit(raw):
+        if classify_resource and looks_like_a_resource_limit(raw):
             return WorkerResult(
                 event=Event.WORKER_RESOURCE_LIMIT,
                 reason="worker stopped and the output mentions a usage limit",
@@ -276,28 +305,48 @@ class CliWorker:
             text = self.output_text(result, output_file)
 
         raw = "\n".join(part for part in (text, result.stderr) if part).strip()
+        diagnostic = {
+            "worker": self.name.value,
+            "role": request.role.value,
+            "state": request.state.value,
+            "stage": request.stage.value if request.stage else None,
+            "phase": request.phase.value if request.phase else None,
+            "argv": command,
+            "resolved_executable": result.resolved_executable or resolve_executable(command[0]),
+            "raw_exit_code": result.exit_code,
+            "signed_exit_code": signed_exit_code(result.exit_code),
+            "elapsed_ms": result.elapsed_ms,
+            "timed_out": result.timed_out,
+            "stdout_tail": text[-1000:],
+            "stderr_tail": result.stderr[-1000:],
+        }
 
         if result.timed_out:
             return WorkerResult(
                 event=Event.WORKER_ERROR,
                 reason=f"{self.name.value} timed out after {self.timeout}s",
                 raw_output=raw,
+                diagnostic=diagnostic,
             )
 
         if result.exit_code != 0:
-            if looks_like_a_resource_limit(raw):
+            if failure_is_resource_limit(text, result.stderr):
                 return WorkerResult(
                     event=Event.WORKER_RESOURCE_LIMIT,
                     reason=f"{self.name.value} hit a usage limit",
                     raw_output=raw,
+                    diagnostic=diagnostic,
                 )
             return WorkerResult(
                 event=Event.WORKER_ERROR,
                 reason=f"{self.name.value} exited with {result.exit_code}",
                 raw_output=raw,
+                diagnostic=diagnostic,
             )
 
-        return result_from_output(text, raw)
+        parsed = result_from_output(text, raw, classify_resource=False)
+        parsed.diagnostic = diagnostic
+        return parsed
 
 
 class CodexCliWorker(CliWorker):
@@ -313,7 +362,7 @@ class CodexCliWorker(CliWorker):
             request.workspace,
             "--skip-git-repo-check",
             "--sandbox",
-            "workspace-write",
+            "workspace-write" if request.role.value == "IMPLEMENTER" else "read-only",
             "--output-last-message",
             output_file,
         ]
@@ -343,10 +392,12 @@ class ClaudeCodeWorker(CliWorker):
             "--output-format",
             "json",
             "--permission-mode",
-            "acceptEdits",
+            "acceptEdits" if request.role.value == "IMPLEMENTER" else "plan",
             "--add-dir",
             request.workspace,
         ]
+        if request.role.value != "IMPLEMENTER":
+            command += ["--tools", "", "--no-session-persistence"]
         if self.model:
             command += ["--model", self.model]
         return command
@@ -360,3 +411,73 @@ class ClaudeCodeWorker(CliWorker):
         if isinstance(envelope, dict) and isinstance(envelope.get("result"), str):
             return envelope["result"]
         return result.stdout
+
+
+def _diagnostic(worker: Worker, request: WorkerRequest, command: list[str], result: CommandResult, text: str) -> dict:
+    return {
+        "worker": worker.value, "role": request.role.value, "state": request.state.value,
+        "stage": request.stage.value if request.stage else None,
+        "phase": request.phase.value if request.phase else None,
+        "argv": command, "resolved_executable": result.resolved_executable or resolve_executable(command[0]),
+        "raw_exit_code": result.exit_code, "signed_exit_code": signed_exit_code(result.exit_code),
+        "elapsed_ms": result.elapsed_ms, "timed_out": result.timed_out,
+        "stdout_tail": text[-1000:], "stderr_tail": result.stderr[-1000:],
+    }
+
+
+class GrokCliWorker(CliWorker):
+    name = Worker.GROK
+
+    def run(self, request: WorkerRequest) -> WorkerResult:
+        prompt = build_prompt(request)
+        with tempfile.TemporaryDirectory(prefix="agent-controller-grok-") as scratch:
+            prompt_file = Path(scratch) / "prompt.txt"
+            prompt_file.write_text(prompt, encoding="utf-8")
+            command = ["grok", "--prompt-file", str(prompt_file), "--output-format", "json"]
+            result = self.runner(command, request.workspace, self.timeout, "")
+        try:
+            envelope = json.loads(result.stdout)
+            text = envelope.get("text", "") if isinstance(envelope, dict) else result.stdout
+        except json.JSONDecodeError:
+            text = result.stdout
+        raw = "\n".join(part for part in (text, result.stderr) if part).strip()
+        diagnostic = _diagnostic(self.name, request, command, result, text)
+        if result.timed_out:
+            return WorkerResult(event=Event.WORKER_ERROR, reason=f"{self.name.value} timed out", raw_output=raw, diagnostic=diagnostic)
+        if result.exit_code != 0:
+            event = Event.WORKER_RESOURCE_LIMIT if failure_is_resource_limit(text, result.stderr) else Event.WORKER_ERROR
+            return WorkerResult(event=event, reason=f"{self.name.value} exited with {result.exit_code}", raw_output=raw, diagnostic=diagnostic)
+        parsed = result_from_output(text, raw, classify_resource=False)
+        parsed.diagnostic = diagnostic
+        return parsed
+
+
+class AgyCliWorker(CliWorker):
+    name = Worker.ANTIGRAVITY
+    MAX_PROMPT_UTF16 = 30000
+
+    @classmethod
+    def command_line_units(cls, text: str) -> int:
+        return len(text.encode("utf-16-le")) // 2
+
+    def run(self, request: WorkerRequest) -> WorkerResult:
+        prompt = build_prompt(request)
+        units = self.command_line_units(prompt)
+        if units > self.MAX_PROMPT_UTF16:
+            return WorkerResult(
+                event=Event.WORKER_ERROR,
+                reason=f"{self.name.value} prompt exceeds UTF-16 command-line guard",
+                diagnostic={"worker": self.name.value, "prompt_utf16_units": units, "limit": self.MAX_PROMPT_UTF16},
+            )
+        command = ["agy", "--print", prompt]
+        result = self.runner(command, request.workspace, self.timeout, "")
+        raw = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
+        diagnostic = _diagnostic(self.name, request, ["agy", "--print", "<prompt>"], result, result.stdout)
+        if result.timed_out:
+            return WorkerResult(event=Event.WORKER_ERROR, reason=f"{self.name.value} timed out", raw_output=raw, diagnostic=diagnostic)
+        if result.exit_code != 0:
+            event = Event.WORKER_RESOURCE_LIMIT if failure_is_resource_limit(result.stdout, result.stderr) else Event.WORKER_ERROR
+            return WorkerResult(event=event, reason=f"{self.name.value} exited with {result.exit_code}", raw_output=raw, diagnostic=diagnostic)
+        parsed = result_from_output(result.stdout, raw, classify_resource=False)
+        parsed.diagnostic = diagnostic
+        return parsed

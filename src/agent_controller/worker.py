@@ -134,6 +134,7 @@ class WorkerResult(BaseModel):
     """Worker の自己申告。実際に変わったかは検証していない（§17-14 の Git 連携まで）。"""
 
     raw_output: str = ""
+    diagnostic: dict[str, Any] = Field(default_factory=dict)
 
 
 class WorkerAdapter(Protocol):
@@ -146,6 +147,19 @@ class WorkerAdapter(Protocol):
     name: Worker
 
     def run(self, request: WorkerRequest) -> WorkerResult: ...
+
+
+class WorkerRouter:
+    """Role-aware candidate selection; fallback never changes the position."""
+
+    def __init__(self, candidates: dict[Role, list[WorkerAdapter] | WorkerAdapter]):
+        self._candidates = {
+            role: value if isinstance(value, list) else [value]
+            for role, value in candidates.items()
+        }
+
+    def candidates_for(self, role: Role) -> list[WorkerAdapter]:
+        return list(self._candidates.get(role, []))
 
 
 class WorkerError(BaseModel):
@@ -186,6 +200,19 @@ def validate_worker_result(
             )
 
     return None
+
+
+def diagnostic_summary(result: WorkerResult) -> str:
+    diagnostic = result.diagnostic
+    if not diagnostic:
+        return ""
+    return (
+        f"raw_exit={diagnostic.get('raw_exit_code')} "
+        f"signed_exit={diagnostic.get('signed_exit_code')} "
+        f"exe={diagnostic.get('resolved_executable')} "
+        f"elapsed_ms={diagnostic.get('elapsed_ms')} "
+        f"stderr_tail={str(diagnostic.get('stderr_tail', ''))[-300:]}"
+    )
 
 
 def stage_result_from(result: WorkerResult, worker: Worker, role: Role) -> StageResult:
@@ -329,7 +356,7 @@ def qanda_directive(base: str, question: Question | None) -> str:
 
 
 def phase_handlers_from_worker(
-    workers: WorkerAdapter | dict[Role, WorkerAdapter],
+    workers: WorkerAdapter | WorkerRouter | dict[Role, WorkerAdapter | list[WorkerAdapter]],
     workspace: str,
     input_artifacts: list[str],
     output_artifact: str,
@@ -343,14 +370,25 @@ def phase_handlers_from_worker(
     workers に dict を渡すと Role ごとに別の Worker を使う（指示書 §13 の
     「Implementer と Reviewer は別 Worker」）。1 つだけ渡せば単独運転。
     """
-    if not isinstance(workers, dict):
-        workers = {role: workers for role in Role}
+    if isinstance(workers, WorkerRouter):
+        router = workers
+        worker_map = None
+    elif not isinstance(workers, dict):
+        router = None
+        worker_map = {role: [workers] for role in Role}
+    else:
+        router = None
+        worker_map = {
+            role: value if isinstance(value, list) else [value]
+            for role, value in workers.items()
+        }
 
     directives = directives if directives is not None else PHASE_DIRECTIVES
 
     def make(phase: Phase) -> PhaseHandler:
         role = PHASE_ROLES[phase]
-        adapter = workers[role]
+        candidates = router.candidates_for(role) if router else worker_map[role]
+        adapter = candidates[0]
         permitted = (
             allowed_events[phase]
             if allowed_events is not None and phase in allowed_events
@@ -386,29 +424,48 @@ def phase_handlers_from_worker(
                 permitted,
                 expected_output_schema=WORKER_OUTPUT_SCHEMA,
             )
-            result = adapter.run(request)
-
-            problem = validate_worker_result(result, request)
-            if problem is not None:
-                result.event = Event.WORKER_ERROR
-                result.reason = f"{problem.message} | raw: {problem.raw_output[:200]}"
-
-            if git is not None and result.event in (
+            result = None
+            selected = candidates[0]
+            failures: list[str] = []
+            for index, candidate in enumerate(candidates):
+                selected = candidate
+                result = candidate.run(request)
+                if result.event in (Event.WORKER_ERROR, Event.WORKER_RESOURCE_LIMIT):
+                    summary = diagnostic_summary(result)
+                    if summary:
+                        result.reason = f"{result.reason or result.event.value}; {summary}"
+                problem = validate_worker_result(result, request)
+                if problem is not None:
+                    result.event = Event.WORKER_ERROR
+                    result.reason = f"{problem.message} | raw: {problem.raw_output[:200]}"
+                if result.event not in (Event.WORKER_ERROR, Event.WORKER_RESOURCE_LIMIT):
+                    break
+                failures.append(f"{candidate.name.value}: {result.reason or result.event.value}")
+                if git is not None:
+                    try:
+                        actual = git.verified_files_changed(result.files_changed)
+                        git.rollback(run.checkpoint_commit or git.head())
+                        result.reason = (
+                            f"{result.reason or result.event.value}; rolled back "
+                            f"{actual or 'no tracked changes'} to {run.checkpoint_commit}"
+                        )
+                    except GitCheckpointError as error:
+                        result.event = Event.WORKER_ERROR
+                        result.reason = f"rollback failed: {error}"
+                        break
+                if index + 1 < len(candidates) and result.event in (
+                    Event.WORKER_ERROR,
+                    Event.WORKER_RESOURCE_LIMIT,
+                ):
+                    continue
+                break
+            assert result is not None
+            if len(failures) > 1:
+                result.reason = f"fallback attempts: {'; '.join(failures)}; {result.reason or result.event.value}"
+            if git is not None and result.event not in (
                 Event.WORKER_ERROR,
                 Event.WORKER_RESOURCE_LIMIT,
             ):
-                try:
-                    actual = git.verified_files_changed(result.files_changed)
-                    git.rollback(run.checkpoint_commit or git.head())
-                    result.reason = (
-                        f"{result.reason or result.event.value}; "
-                        f"rolled back {actual or 'no tracked changes'} to "
-                        f"{run.checkpoint_commit}"
-                    )
-                except GitCheckpointError as error:
-                    result.event = Event.WORKER_ERROR
-                    result.reason = f"rollback failed: {error}"
-            elif git is not None:
                 try:
                     actual = git.verified_files_changed(result.files_changed)
                     git.commit_success(result.event)
@@ -431,7 +488,7 @@ def phase_handlers_from_worker(
                     reason=f"{problem.message} | raw: {problem.raw_output[:200]}",
                 )
 
-            return stage_result_from(result, adapter.name, role)
+            return stage_result_from(result, selected.name, role)
 
         return handler
 

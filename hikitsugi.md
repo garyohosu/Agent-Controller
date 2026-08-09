@@ -12,7 +12,12 @@ current CODE, fresh TEST and REVIEW PASS results, zero OPEN/HUMAN_REQUIRED quest
 README LATEST or NOT_REQUIRED, and a clean committed pushed Git state. The next
 priority is wiring DESIGN / IMPLEMENT / TEST / REVIEW / DOC_SYNC in the Main Graph;
 the wired path now connects those states; deterministic default stubs remain for isolated tests.
-Live AI E2E was attempted in scratch and stopped at HUMAN_REQUIRED; COMPLETE was not reached.
+Live AI E2E was re-run in scratch and stopped at HUMAN_REQUIRED; COMPLETE was not reached.
+Claude/Codex/Grok/agy adapters now exist. Grok and agy are read-only role candidates,
+Claude/Codex use role-aware permission profiles, and reviewer fallback preserves the
+same checkpoint and position. CLI diagnostics retain raw/signed exit code, executable,
+elapsed time, and output tails. The latest live evidence and the DESIGN stale-State
+fix are in `instructions/result-2026-08-09-014.md`.
 
 ## これは何か
 

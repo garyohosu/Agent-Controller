@@ -1,6 +1,6 @@
 """Agent Controller: deterministic state machine driving exchangeable AI workers."""
 
-from agent_controller.cli_worker import ClaudeCodeWorker, CodexCliWorker
+from agent_controller.cli_worker import AgyCliWorker, ClaudeCodeWorker, CodexCliWorker, GrokCliWorker
 from agent_controller.complete import (
     CompleteBlocker,
     CompleteBlockerCode,
@@ -78,6 +78,7 @@ from agent_controller.worker import (
     WorkerAdapter,
     WorkerRequest,
     WorkerResult,
+    WorkerRouter,
     phase_handlers_from_worker,
 )
 
@@ -92,12 +93,14 @@ __all__ = [
     "ArtifactState",
     "ArtifactStatus",
     "ClaudeCodeWorker",
+    "AgyCliWorker",
     "CompleteBlocker",
     "CompleteBlockerCode",
     "CompleteCheckResult",
     "CompleteGate",
     "CompleteGateError",
     "CodexCliWorker",
+    "GrokCliWorker",
     "DocumentStage",
     "DocumentStageConfig",
     "DirtyWorkingTreeError",
@@ -126,6 +129,7 @@ __all__ = [
     "WorkerAdapter",
     "WorkerRequest",
     "WorkerResult",
+    "WorkerRouter",
     "wired_handlers",
     "allowed_events",
     "answer_question",
