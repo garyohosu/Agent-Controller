@@ -406,7 +406,7 @@ class TestCommands:
         ClaudeCodeWorker(runner=claude_runner).run(request)
         assert "plan" in claude_runner.calls[0][0]
         assert "--no-session-persistence" in claude_runner.calls[0][0]
-        assert "Read,Glob,Grep" in claude_runner.calls[0][0]
+        assert "--tools" not in claude_runner.calls[0][0]
 
     def test_grok_envelope_text_and_command(self, tmp_path: Path) -> None:
         runner = fake_runner(json.dumps({"text": '{"event": "PASS"}'}))

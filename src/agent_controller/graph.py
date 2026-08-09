@@ -265,7 +265,7 @@ def wired_handlers(
                 directives = dict(PHASE_DIRECTIVES)
                 if directive:
                     directives[Phase.REVIEW_LIGHT] = directive
-                review_inputs = ["CODE"]
+                review_inputs = ["CODE"] if (Path(workspace) / "CODE").is_file() else []
                 if (Path(workspace) / "QandA.md").is_file():
                     review_inputs.append("QandA.md")
                 return phase_handlers_from_worker(

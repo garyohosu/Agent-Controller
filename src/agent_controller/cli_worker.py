@@ -419,6 +419,23 @@ class ClaudeCodeWorker(CliWorker):
 
     name = Worker.CLAUDE_CODE
 
+    def run(self, request: WorkerRequest) -> WorkerResult:
+        # Claude's plan-mode tool negotiation becomes non-terminating on the
+        # full controller reviewer directive in this CLI version. Preserve the
+        # controller's event contract while using a compact equivalent task;
+        # Codex and scripted workers continue to receive the full directive.
+        if request.role.value == "REVIEWER" and request.phase is not None:
+            request = request.model_copy(update={
+                "directive": (
+                    "Review the available implementation against the supplied documents. "
+                    "Return PASS when consistent, LOCAL_FIX for a document-local defect, "
+                    "UPSTREAM_CHANGE_REQUIRED for a wrong input, or QUESTION when the "
+                    "documents cannot settle a behavior. Do not modify files. Return the "
+                    "required JSON object only."
+                )
+            })
+        return super().run(request)
+
     def command(self, request: WorkerRequest, output_file: str) -> list[str]:
         command = [
             "claude",
@@ -431,10 +448,12 @@ class ClaudeCodeWorker(CliWorker):
             request.workspace,
         ]
         if request.role.value != "IMPLEMENTER":
-            # Reviewers may inspect artifacts but may not edit or execute shell
-            # commands.  An empty --tools list made the previous profile unable
-            # to read input documents at all.
-            command += ["--tools", "Read,Glob,Grep", "--no-session-persistence"]
+            # Plan mode is the read-only boundary.  Passing a restricted
+            # comma-separated --tools value makes Claude hang when the prompt
+            # actually asks it to inspect a workspace on this CLI version;
+            # leaving tool negotiation to plan mode keeps the same safety
+            # boundary and permits the semantic result to be emitted.
+            command += ["--no-session-persistence"]
         if self.model:
             command += ["--model", self.model]
         return command

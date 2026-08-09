@@ -129,3 +129,7 @@ Claude / Grok / agy の実行可否は環境依存です。現在の受入構成
 ## 2026-08-09 instruction-013 結果
 
 Q&A回答後の再Reviewに回答を構造化して渡し、`ANSWER_ONLY` / `IMPLEMENT_CHANGE_REQUIRED` / `ARTIFACT_CHANGE_REQUIRED` / `UPSTREAM_CHANGE_REQUIRED` / `HUMAN_REQUIRED` を扱います。QandA.mdはController-owned metadataとしてDOC_SYNCでcommitします。新規scratchでClaude timeout→Codex fallback→COMPLETEを確認済みです。Claudeの有効semantic resultは未確認のため、4AI完全受入は既知制限として扱います。詳細は `instructions/result-2026-08-09-020.md`。
+-
+## 2026-08-09 instruction-014 Claude診断結果
+
+Claude CLI 2.1.226の単体起動・stdin PIPE・JSON出力は成功しますが、実Reviewer payloadではtimeoutが残りました。`--tools Read,Glob,Grep`を除去し、plan modeと短縮Reviewer directiveを導入した結果、短縮payloadは3回連続PASS、Main GraphではClaude timeout後のCodex fallbackでCOMPLETEを確認しています。Claude runtime側の長いpayload不安定性は既知制限として `instructions/result-2026-08-09-021.md` に記録しています。

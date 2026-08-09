@@ -278,3 +278,7 @@ Codex基準の実AI Main Graph E2Eは COMPLETE 到達を確認済み。Role rout
 ## instruction-013 受入状況
 
 前回のQ&A再質問ループは、回答付きReview directiveと構造化action routingで修正済みです。初回ReviewでQandA.mdを必須にせず、質問発生後だけ入力へ追加します。QandA.mdのcontroller commitも追加しました。Claudeは30秒・120秒ともtimeoutしましたが、Codex fallbackで新規scratchのCOMPLETE到達を確認しています。2種類のAIが有効結果を採用する受入は未達で、環境依存のPOST_MVPとして記録します。
+-
+## instruction-014 Claude診断の引き継ぎ
+
+ClaudeはCLI完全故障ではありません。単純promptと短縮Reviewer payloadはexit 0/structured PASSです。一方、実Main GraphのReviewer payloadでは無出力timeoutが残ります。`--tools Read,Glob,Grep`を外し、実在artifactだけを渡し、Claude用directiveを短縮しましたが、3回連続の実Main Graph成功は未達です。Claude runtime/長文payload側の問題として `CLAUDE_ROOT_CAUSE_CONFIRMED_NOT_FIXABLE_LOCALLY` と判定し、Codex fallbackとCOMPLETE経路は維持します。
