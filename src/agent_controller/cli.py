@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 from agent_controller.human import AnswerRejected, answer_question, complete_blockers
+from agent_controller.complete import CompleteGate
 from agent_controller.models import DocumentStage, QuestionStatus
 from agent_controller.qanda import render_qanda
 from agent_controller.store import Store
@@ -82,8 +83,14 @@ def cmd_status(args: argparse.Namespace) -> int:
         if run.phase:
             position += f"/{run.phase.value}"
         print(f"{run.run_id}  {position}  ({run.status.value})")
-        blockers = complete_blockers(store, run)
-        print("COMPLETE blockers: " + ("; ".join(blockers) if blockers else "none (Q&A)"))
+        result = CompleteGate(store, getattr(args, "workspace", ".")).check(run)
+        print("Complete: " + ("YES" if result.ready else "NO"))
+        if result.blockers:
+            print("Blockers:")
+            for blocker in result.blockers:
+                print(f"- {blocker.code.value}: {blocker.detail}")
+        else:
+            print("Blockers: none")
     return 0
 
 
@@ -91,6 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent-controller")
     parser.add_argument("--db", default=DEFAULT_DB, help="controller database")
     parser.add_argument("--run", required=True, help="run id")
+    parser.add_argument("--workspace", default=".", help="Git workspace for status checks")
     sub = parser.add_subparsers(dest="command", required=True)
 
     answer = sub.add_parser("answer", help="answer a question that is waiting on a human")

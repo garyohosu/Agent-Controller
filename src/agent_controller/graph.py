@@ -16,6 +16,7 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
 
 from agent_controller.guards import LoopGuard, apply_guard
+from agent_controller.complete import CompleteGate
 from agent_controller.models import Event, Role, RunState, State, Worker
 from agent_controller.transition_log import TransitionLogger
 
@@ -152,8 +153,11 @@ def build_main_graph(
     logger: TransitionLogger,
     handlers: dict[State, StageHandler] | None = None,
     guard: LoopGuard | None = None,
+    complete_gate: CompleteGate | None = None,
 ) -> Any:
     """トップレベル Graph を組んで compile する。"""
+    if complete_gate is not None:
+        logger.complete_gate = complete_gate
     handlers = handlers if handlers is not None else stub_handlers()
     missing = [state.value for state in EXECUTABLE_STATES if state not in handlers]
     if missing:
@@ -181,12 +185,13 @@ def run_graph(
     handlers: dict[State, StageHandler] | None = None,
     guard: LoopGuard | None = None,
     recursion_limit: int = 100,
+    complete_gate: CompleteGate | None = None,
 ) -> RunState:
     """run を停止 State まで進め、最終 RunState を返す。
 
     通常のループ停止は guard（guards.py）が行う。recursion_limit はその後ろに
     残してある最後の非常停止装置で、guard が取りこぼした場合にだけ働く。
     """
-    graph = build_main_graph(logger, handlers, guard)
+    graph = build_main_graph(logger, handlers, guard, complete_gate)
     result = graph.invoke(run, config={"recursion_limit": recursion_limit})
     return RunState.model_validate(result)

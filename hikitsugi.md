@@ -5,6 +5,14 @@
 
 ---
 
+## COMPLETE gate status
+
+§17-15 is implemented. COMPLETE requires machine-checked VALID design artifacts,
+current CODE, fresh TEST and REVIEW PASS results, zero OPEN/HUMAN_REQUIRED questions,
+README LATEST or NOT_REQUIRED, and a clean committed pushed Git state. The next
+priority is wiring DESIGN / IMPLEMENT / TEST / REVIEW / DOC_SYNC in the Main Graph;
+those states remain stubbed until that work is done.
+
 ## これは何か
 
 複数の AI（Claude Code / Codex CLI）を決定論的な State Machine で制御し、

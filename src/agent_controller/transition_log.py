@@ -21,6 +21,7 @@ from agent_controller.models import (
     Transition,
     Worker,
 )
+from agent_controller.complete import CompleteGate
 from agent_controller.store import Store
 from agent_controller.transitions import apply_event
 
@@ -94,8 +95,9 @@ class TransitionLogger:
     Controller から見た唯一の「状態を進める」入口。ここを通さない遷移は作らない。
     """
 
-    def __init__(self, store: Store) -> None:
+    def __init__(self, store: Store, complete_gate: CompleteGate | None = None) -> None:
         self.store = store
+        self.complete_gate = complete_gate
 
     def persist(self, run: RunState, transition: Transition) -> Transition:
         """すでに組み立てた遷移を保存する。
@@ -119,6 +121,12 @@ class TransitionLogger:
         reason: str | None = None,
     ) -> Transition:
         """event を適用し、遷移行と更新後の run を保存する。"""
+        if (
+            self.complete_gate is not None
+            and run.current_state == State.DOC_SYNC
+            and event == Event.PASS
+        ):
+            self.complete_gate.require(run)
         transition = apply_event(
             run,
             event,

@@ -1,6 +1,13 @@
 """Agent Controller: deterministic state machine driving exchangeable AI workers."""
 
 from agent_controller.cli_worker import ClaudeCodeWorker, CodexCliWorker
+from agent_controller.complete import (
+    CompleteBlocker,
+    CompleteBlockerCode,
+    CompleteCheckResult,
+    CompleteGate,
+    CompleteGateError,
+)
 from agent_controller.design import (
     default_design_stages,
     design_artifact_statuses,
@@ -84,6 +91,11 @@ __all__ = [
     "ArtifactState",
     "ArtifactStatus",
     "ClaudeCodeWorker",
+    "CompleteBlocker",
+    "CompleteBlockerCode",
+    "CompleteCheckResult",
+    "CompleteGate",
+    "CompleteGateError",
     "CodexCliWorker",
     "DocumentStage",
     "DocumentStageConfig",
