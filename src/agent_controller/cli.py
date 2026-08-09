@@ -13,6 +13,7 @@ from pathlib import Path
 
 from agent_controller.human import AnswerRejected, answer_batch, answer_question, complete_blockers
 from agent_controller.complete import CompleteGate
+from agent_controller.lifecycle import RunStartError, start_run, validate_workspace
 from agent_controller.models import DocumentStage, QuestionStatus
 from agent_controller.qanda import render_qanda
 from agent_controller.store import Store
@@ -25,7 +26,44 @@ def _store(args: argparse.Namespace) -> Store:
     return Store(args.db)
 
 
+def _require_run(args: argparse.Namespace) -> str:
+    if not args.run:
+        raise SystemExit("--run is required for this command")
+    return args.run
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    if not args.workspace:
+        print("rejected: --workspace is required", file=sys.stderr)
+        return 2
+    if not args.run:
+        print("rejected: --run is required", file=sys.stderr)
+        return 2
+    try:
+        # Validate before opening Store so invalid input does not even create
+        # a new SQLite file.
+        validate_workspace(args.workspace)
+        if not args.request.strip():
+            raise RunStartError("request must not be empty")
+        with _store(args) as store:
+            run, run_input = start_run(
+                store,
+                TransitionLogger(store),
+                run_id=args.run,
+                workspace=args.workspace,
+                request=args.request,
+            )
+        print(f"created {run.run_id}")
+        print(f"  workspace: {run_input.workspace}")
+        print(f"  position: {run.current_state.value}")
+        return 0
+    except (OSError, RunStartError) as error:
+        print(f"rejected: {error}", file=sys.stderr)
+        return 2
+
+
 def cmd_questions(args: argparse.Namespace) -> int:
+    args.run = _require_run(args)
     with _store(args) as store:
         questions = store.questions(args.run)
         if not questions:
@@ -40,12 +78,14 @@ def cmd_questions(args: argparse.Namespace) -> int:
 
 
 def cmd_show(args: argparse.Namespace) -> int:
+    args.run = _require_run(args)
     with _store(args) as store:
         print(render_qanda(store.questions(args.run)))
     return 0
 
 
 def cmd_answer(args: argparse.Namespace) -> int:
+    args.run = _require_run(args)
     upstream = DocumentStage(args.upstream) if args.upstream else None
     with _store(args) as store:
         logger = TransitionLogger(store)
@@ -73,6 +113,7 @@ def cmd_answer(args: argparse.Namespace) -> int:
 
 
 def cmd_answer_batch(args: argparse.Namespace) -> int:
+    args.run = _require_run(args)
     try:
         answers = json.loads(Path(args.answers).read_text(encoding="utf-8"))
         if not isinstance(answers, list):
@@ -88,6 +129,7 @@ def cmd_answer_batch(args: argparse.Namespace) -> int:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
+    args.run = _require_run(args)
     with _store(args) as store:
         run = store.load_run(args.run)
         if run is None:
@@ -99,7 +141,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         if run.phase:
             position += f"/{run.phase.value}"
         print(f"{run.run_id}  {position}  ({run.status.value})")
-        result = CompleteGate(store, getattr(args, "workspace", ".")).check(run)
+        result = CompleteGate(store, getattr(args, "workspace", None) or ".").check(run)
         print("Complete: " + ("YES" if result.ready else "NO"))
         if result.blockers:
             print("Blockers:")
@@ -113,9 +155,18 @@ def cmd_status(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent-controller")
     parser.add_argument("--db", default=DEFAULT_DB, help="controller database")
-    parser.add_argument("--run", required=True, help="run id")
-    parser.add_argument("--workspace", default=".", help="Git workspace for status checks")
+    parser.add_argument("--run", help="run id")
+    parser.add_argument("--workspace", help="Git workspace for status checks")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    init = sub.add_parser("init", help="create a run and enter DESIGN")
+    # Accept options after ``init`` as well as the historical global-option
+    # placement, so both CLI spellings are usable.
+    init.add_argument("--db", dest="db", default=argparse.SUPPRESS, help="controller database")
+    init.add_argument("--run", dest="run", default=argparse.SUPPRESS, help="new run id")
+    init.add_argument("--workspace", dest="workspace", default=argparse.SUPPRESS, help="Git workspace")
+    init.add_argument("--request", required=True, help="formal initial request")
+    init.set_defaults(func=cmd_init)
 
     answer = sub.add_parser("answer", help="answer a question that is waiting on a human")
     answer.add_argument("question_id")

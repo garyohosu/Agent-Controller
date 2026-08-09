@@ -281,4 +281,10 @@ Codex基準の実AI Main Graph E2Eは COMPLETE 到達を確認済み。Role rout
 -
 ## instruction-014 Claude診断の引き継ぎ
 
+## v1.0.1 公開CLIの新規run入口
+
+v1.0.0の実利用試験で、既存run操作用CLIは存在する一方、新規runを外部利用者が作る入口が不足していることが判明した。v1.0.1では `agent-controller init` を正式入口とし、Git workspaceの存在・repository・clean treeを確認してからrunを作成する。
+
+初期要求はSQLiteの正式入力として保存し、`IDLE -> DESIGN` の遷移を記録する。run ID衝突、dirty tree、非Git directory、空requestは拒否する。`status` 等の既存run操作と、将来の `--resume` による再開は責務を混同しない。
+
 ClaudeはCLI完全故障ではありません。単純promptと短縮Reviewer payloadはexit 0/structured PASSです。一方、実Main GraphのReviewer payloadでは無出力timeoutが残ります。`--tools Read,Glob,Grep`を外し、実在artifactだけを渡し、Claude用directiveを短縮しましたが、3回連続の実Main Graph成功は未達です。Claude runtime/長文payload側の問題として `CLAUDE_ROOT_CAUSE_CONFIRMED_NOT_FIXABLE_LOCALLY` と判定し、Codex fallbackとCOMPLETE経路は維持します。

@@ -314,6 +314,15 @@ class RunState(BaseModel):
     updated_at: datetime = Field(default_factory=utcnow)
 
 
+class RunInput(BaseModel):
+    """The formal request and workspace captured when a run is created."""
+
+    run_id: str
+    workspace: str
+    request: str
+    created_at: datetime = Field(default_factory=utcnow)
+
+
 class Transition(BaseModel):
     """状態遷移ログ 1 行（指示書 §10 の 15 項目 + to_phase）。
 

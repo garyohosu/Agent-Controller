@@ -23,6 +23,7 @@ from agent_controller.models import (
     ArtifactState,
     Question,
     QuestionStatus,
+    RunInput,
     RunState,
     Transition,
     utcnow,
@@ -180,6 +181,25 @@ class Store:
         return [
             RunState.model_validate({key: row[key] for key in row.keys()}) for row in rows
         ]
+
+    def save_input(self, run_input: RunInput) -> None:
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO run_inputs (run_id, workspace, request, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (run_input.run_id, run_input.workspace, run_input.request,
+                 run_input.created_at.isoformat()),
+            )
+
+    def load_input(self, run_id: str) -> RunInput | None:
+        row = self._conn.execute(
+            "SELECT * FROM run_inputs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return RunInput.model_validate({key: row[key] for key in row.keys()})
 
     # -- transitions ---------------------------------------------------------
 

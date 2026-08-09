@@ -1,6 +1,6 @@
 [project]
 name = "agent-controller"
-version = "1.0.0"
+version = "1.0.1"
 description = "State machine controller that drives Director / Implementer / Reviewer AI workers"
 readme = "README.md"
 requires-python = ">=3.12"

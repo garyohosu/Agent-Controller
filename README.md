@@ -139,6 +139,27 @@ worker timeout in some local environments. Claude's short read-only Reviewer
 contract and Codex fallback are covered; this known runtime limitation does not
 invalidate the Codex baseline path or COMPLETE gate.
 
+## Starting a new run (v1.0.1)
+
+The public CLI can create a new run from an external, clean Git workspace. The
+initial request is stored as a formal SQLite input and the run enters DESIGN
+through the normal transition log.
+
+```bash
+uv run agent-controller \
+  --workspace C:\\project\\testproject \
+  --db controller.db \
+  --run TODO001 \
+  init --request "Build a Python CLI TODO app"
+```
+
+`init` rejects a missing/non-Git workspace, a dirty tree, an empty request, and
+an existing run ID. It writes bounded start diagnostics outside the workspace;
+the request text itself is not written to the diagnostic JSONL. The command
+creates the run at `IDLE`, records `START`, and leaves it at `DESIGN` for the
+normal Controller/Worker execution path. Existing run commands remain
+backward-compatible.
+
 ## 設計資料
 
 - `memo.md` — 初期設計メモ

@@ -151,10 +151,23 @@ _V3_STATEMENTS = [
     "ALTER TABLE questions ADD COLUMN requires_human_confirmation_before_complete INTEGER NOT NULL DEFAULT 0",
 ]
 
+_V4_STATEMENTS = [
+    """
+    CREATE TABLE run_inputs (
+        run_id    TEXT PRIMARY KEY,
+        workspace TEXT NOT NULL,
+        request   TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (run_id) REFERENCES runs (run_id)
+    )
+    """,
+]
+
 MIGRATIONS: list[Migration] = [
     Migration(version=1, name="baseline", statements=_V1_STATEMENTS),
     Migration(version=2, name="questions", statements=_V2_STATEMENTS),
     Migration(version=3, name="question_decision_metadata", statements=_V3_STATEMENTS),
+    Migration(version=4, name="run_inputs", statements=_V4_STATEMENTS),
 ]
 
 LATEST_VERSION = max(migration.version for migration in MIGRATIONS)
