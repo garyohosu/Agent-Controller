@@ -61,6 +61,14 @@ class StageResult(BaseModel):
     worker: Worker | None = None
     reason: str | None = None
     handled: bool = False
+    decision_class: str | None = None
+    provisional_answer: str | None = None
+    risk: str | None = None
+    reversible: bool | None = None
+    affected_artifacts: list[str] = []
+    blocking_scope: str | None = None
+    recommended_human_action: str | None = None
+    requires_human_confirmation_before_complete: bool = False
 
 
 StageHandler = Callable[[RunState], StageResult]
@@ -151,20 +159,52 @@ def wired_handlers(
         if implementer is None:
             return StageResult(event=Event.WORKER_ERROR, reason="IMPLEMENT worker is not configured")
         try:
-            handlers = phase_handlers_from_worker(
-                implementer, workspace, [], "CODE", git=git
-            )
+            handlers = phase_handlers_from_worker(implementer, workspace, [], "CODE", git=git)
             result = handlers[Phase.GENERATE](run)
+            if result.event == Event.QUESTION and qanda is not None:
+                question = qanda.open_question(
+                    run,
+                    question=result.question or result.reason or "(no question text)",
+                    context=result.reason,
+                    asked_role=result.role,
+                    asked_worker=result.worker,
+                )
+                # A QUESTION from IMPLEMENT is sent through the same Director
+                # classification contract before the main graph decides whether
+                # to suspend.  Only an explicit reversible classification may
+                # continue automatically.
+                qanda_result = phase_handlers_from_worker(
+                    implementer,
+                    workspace,
+                    ["SPEC.md", "README.md"],
+                    "CODE",
+                    qanda=qanda,
+                    git=git,
+                )[Phase.QANDA](run)
+                decision_class = getattr(qanda_result, "decision_class", None)
+                if qanda_result.event in (Event.DONE, Event.LOCAL_FIX) and decision_class == "LOW_RISK_REVERSIBLE":
+                    qanda.provisional_decision(
+                        question,
+                        getattr(qanda_result, "provisional_answer", None)
+                        or qanda_result.answer
+                        or qanda_result.reason
+                        or "(provisional)",
+                        classification=decision_class,
+                        risk=getattr(qanda_result, "risk", None) or "LOW",
+                        reversible=getattr(qanda_result, "reversible", None),
+                        affected_artifacts=getattr(qanda_result, "affected_artifacts", []),
+                        blocking_scope=getattr(qanda_result, "blocking_scope", None),
+                        recommended_human_action=getattr(qanda_result, "recommended_human_action", None),
+                    )
+                    result = handlers[Phase.GENERATE](run)
+                elif qanda_result.event in (Event.DONE, Event.LOCAL_FIX):
+                    qanda.answer(question, qanda_result.answer or qanda_result.reason or "(answered)", answered_by=qanda_result.worker)
+                    result = handlers[Phase.GENERATE](run)
+                else:
+                    qanda.escalate_to_human(question, qanda_result.reason)
+                    return StageResult(event=Event.CANNOT_ANSWER, role=result.role, worker=result.worker, reason=qanda_result.reason)
         except Exception as error:
             return StageResult(event=Event.WORKER_ERROR, reason=f"IMPLEMENT failed: {error}")
-        if result.event == Event.QUESTION and qanda is not None:
-            qanda.open_question(
-                run,
-                question=result.question or result.reason or "(no question text)",
-                context=result.reason,
-                asked_role=result.role,
-                asked_worker=result.worker,
-            )
         if result.event == Event.DONE:
             logger.store.save_artifact(ArtifactState(
                 run_id=run.run_id, kind=ArtifactKind.CODE,
@@ -173,6 +213,13 @@ def wired_handlers(
         return StageResult(
             event=result.event, role=result.role, worker=result.worker,
             reason=result.reason, handled=False,
+            decision_class=getattr(result, "decision_class", None),
+            provisional_answer=getattr(result, "provisional_answer", None),
+            risk=getattr(result, "risk", None),
+            reversible=getattr(result, "reversible", None),
+            affected_artifacts=getattr(result, "affected_artifacts", []),
+            blocking_scope=getattr(result, "blocking_scope", None),
+            recommended_human_action=getattr(result, "recommended_human_action", None),
         )
 
     def test_handler(run: RunState) -> StageResult:

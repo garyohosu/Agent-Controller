@@ -7,10 +7,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
-from agent_controller.human import AnswerRejected, answer_question, complete_blockers
+from agent_controller.human import AnswerRejected, answer_batch, answer_question, complete_blockers
 from agent_controller.complete import CompleteGate
 from agent_controller.models import DocumentStage, QuestionStatus
 from agent_controller.qanda import render_qanda
@@ -71,6 +72,21 @@ def cmd_answer(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_answer_batch(args: argparse.Namespace) -> int:
+    try:
+        answers = json.loads(Path(args.answers).read_text(encoding="utf-8"))
+        if not isinstance(answers, list):
+            raise ValueError("answers JSON must be an array")
+        with _store(args) as store:
+            logger = TransitionLogger(store)
+            results = answer_batch(store, logger, args.run, answers, workspace=args.workspace)
+            print(f"{len(results)} questions answered")
+        return 0
+    except (OSError, ValueError, AnswerRejected) as error:
+        print(f"rejected: {error}", file=sys.stderr)
+        return 2
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     with _store(args) as store:
         run = store.load_run(args.run)
@@ -111,6 +127,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     answer.add_argument("--workspace", help="where QandA.md lives")
     answer.set_defaults(func=cmd_answer)
+
+    batch = sub.add_parser("answer-batch", help="answer several human-required questions")
+    batch.add_argument("answers", help="JSON array with question_id and answer")
+    batch.set_defaults(func=cmd_answer_batch)
 
     listing = sub.add_parser("questions", help="list questions")
     listing.set_defaults(func=cmd_questions)

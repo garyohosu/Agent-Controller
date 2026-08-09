@@ -42,6 +42,7 @@ _STATUS_MARK = {
     QuestionStatus.ANSWERED: "🟢 ANSWERED",
     QuestionStatus.HUMAN_REQUIRED: "🟡 HUMAN_REQUIRED",
 }
+_STATUS_MARK[QuestionStatus.PROVISIONAL] = "PROVISIONAL"
 
 
 def render_question(question: Question) -> str:
@@ -58,6 +59,16 @@ def render_question(question: Question) -> str:
         lines.append(f"- **Related:** {', '.join(question.related_artifacts)}")
 
     lines += ["", "### Question", "", question.question]
+
+    if question.classification:
+        lines += [
+            "", "### Decision classification", "",
+            f"- classification: {question.classification}",
+            f"- risk: {question.risk or 'UNKNOWN'}",
+            f"- reversible: {question.reversible}",
+        ]
+    if question.provisional_answer:
+        lines += ["", "### Provisional answer", "", question.provisional_answer]
 
     if question.context:
         lines += ["", "### Context", "", question.context]
@@ -164,6 +175,31 @@ class QandaFile:
         question.status = QuestionStatus.ANSWERED
         question.answer = answer
         question.answered_by = answered_by
+        self.store.save_question(question)
+        self.refresh(question.run_id)
+        return question
+
+    def provisional_decision(
+        self,
+        question: Question,
+        answer: str,
+        *,
+        classification: str,
+        risk: str | None,
+        reversible: bool | None,
+        affected_artifacts: list[str] | None = None,
+        blocking_scope: str | None = None,
+        recommended_human_action: str | None = None,
+    ) -> Question:
+        question.status = QuestionStatus.PROVISIONAL
+        question.classification = classification
+        question.provisional_answer = answer
+        question.risk = risk
+        question.reversible = reversible
+        question.affected_artifacts = affected_artifacts or []
+        question.blocking_scope = blocking_scope
+        question.recommended_human_action = recommended_human_action
+        question.requires_human_confirmation_before_complete = True
         self.store.save_question(question)
         self.refresh(question.run_id)
         return question

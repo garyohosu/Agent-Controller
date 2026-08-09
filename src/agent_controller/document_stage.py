@@ -189,6 +189,15 @@ class MissingUpstreamTargetError(ValueError):
     仕様の空白を Controller が推測で埋めないための拒否（指示書 §8 の考え方）。
     """
 
+    decision_class: str | None = None
+    provisional_answer: str | None = None
+    risk: str | None = None
+    reversible: bool | None = None
+    affected_artifacts: list[str] = Field(default_factory=list)
+    blocking_scope: str | None = None
+    recommended_human_action: str | None = None
+    requires_human_confirmation_before_complete: bool = False
+
     def __init__(self, phase: Phase) -> None:
         self.phase = phase
         super().__init__(
@@ -501,7 +510,26 @@ def _update_questions(
     if question is None:
         return
 
-    if result.event == Event.CANNOT_ANSWER:
+    decision_class = getattr(result, "decision_class", None)
+    if result.event in (Event.DONE, Event.LOCAL_FIX) and decision_class == "LOW_RISK_REVERSIBLE":
+        qanda.provisional_decision(
+            question,
+            getattr(result, "provisional_answer", None) or result.answer or result.reason or "(provisional)",
+            classification=decision_class,
+            risk=getattr(result, "risk", None) or "LOW",
+            reversible=getattr(result, "reversible", None) if getattr(result, "reversible", None) is not None else True,
+            affected_artifacts=getattr(result, "affected_artifacts", []),
+            blocking_scope=getattr(result, "blocking_scope", None),
+            recommended_human_action=getattr(result, "recommended_human_action", None),
+        )
+    elif result.event == Event.CANNOT_ANSWER:
+        question.classification = decision_class or "UNKNOWN"
+        question.risk = getattr(result, "risk", None)
+        question.reversible = getattr(result, "reversible", None)
+        question.affected_artifacts = getattr(result, "affected_artifacts", [])
+        question.blocking_scope = getattr(result, "blocking_scope", None)
+        question.recommended_human_action = getattr(result, "recommended_human_action", None)
+        qanda.store.save_question(question)
         qanda.escalate_to_human(question, result.reason)
     elif result.event in (Event.DONE, Event.LOCAL_FIX):
         # LOCAL_FIX でも回答はできている。OPEN のままにしない。

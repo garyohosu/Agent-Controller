@@ -85,6 +85,14 @@ _QUESTION_COLUMNS = (
     "question_id",
     "run_id",
     "status",
+    "classification",
+    "provisional_answer",
+    "risk",
+    "reversible",
+    "blocking_scope",
+    "recommended_human_action",
+    "affected_artifacts",
+    "requires_human_confirmation_before_complete",
     "question",
     "context",
     "answer",
@@ -235,8 +243,8 @@ class Store:
                 f"INSERT OR REPLACE INTO questions ({', '.join(_QUESTION_COLUMNS)}) "
                 f"VALUES ({', '.join('?' for _ in _QUESTION_COLUMNS)})",
                 tuple(
-                    ",".join(question.related_artifacts)
-                    if name == "related_artifacts"
+                    ",".join(getattr(question, name))
+                    if name in {"related_artifacts", "affected_artifacts"}
                     else _encode(getattr(question, name))
                     for name in _QUESTION_COLUMNS
                 ),
@@ -247,6 +255,14 @@ class Store:
         data["related_artifacts"] = [
             item for item in str(data["related_artifacts"] or "").split(",") if item
         ]
+        data["affected_artifacts"] = [
+            item for item in str(data["affected_artifacts"] or "").split(",") if item
+        ]
+        if data.get("reversible") is not None:
+            data["reversible"] = bool(data["reversible"])
+        data["requires_human_confirmation_before_complete"] = bool(
+            data.get("requires_human_confirmation_before_complete")
+        )
         return Question.model_validate(data)
 
     def questions(self, run_id: str) -> list[Question]:

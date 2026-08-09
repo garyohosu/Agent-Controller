@@ -140,9 +140,21 @@ _V2_STATEMENTS = [
     "CREATE INDEX idx_questions_open ON questions (run_id, status)",
 ]
 
+_V3_STATEMENTS = [
+    "ALTER TABLE questions ADD COLUMN classification TEXT",
+    "ALTER TABLE questions ADD COLUMN provisional_answer TEXT",
+    "ALTER TABLE questions ADD COLUMN risk TEXT",
+    "ALTER TABLE questions ADD COLUMN reversible INTEGER",
+    "ALTER TABLE questions ADD COLUMN blocking_scope TEXT",
+    "ALTER TABLE questions ADD COLUMN recommended_human_action TEXT",
+    "ALTER TABLE questions ADD COLUMN affected_artifacts TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE questions ADD COLUMN requires_human_confirmation_before_complete INTEGER NOT NULL DEFAULT 0",
+]
+
 MIGRATIONS: list[Migration] = [
     Migration(version=1, name="baseline", statements=_V1_STATEMENTS),
     Migration(version=2, name="questions", statements=_V2_STATEMENTS),
+    Migration(version=3, name="question_decision_metadata", statements=_V3_STATEMENTS),
 ]
 
 LATEST_VERSION = max(migration.version for migration in MIGRATIONS)

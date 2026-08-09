@@ -135,10 +135,26 @@ class WorkerResult(BaseModel):
     answer: str | None = None
 
     files_changed: list[str] = Field(default_factory=list)
+    decision_class: str | None = None
+    provisional_answer: str | None = None
+    risk: str | None = None
+    reversible: bool | None = None
+    affected_artifacts: list[str] = Field(default_factory=list)
+    blocking_scope: str | None = None
+    recommended_human_action: str | None = None
+    requires_human_confirmation_before_complete: bool = False
     """Worker の自己申告。実際に変わったかは検証していない（§17-14 の Git 連携まで）。"""
 
     raw_output: str = ""
     diagnostic: dict[str, Any] = Field(default_factory=dict)
+    decision_class: str | None = None
+    provisional_answer: str | None = None
+    risk: str | None = None
+    reversible: bool | None = None
+    affected_artifacts: list[str] = Field(default_factory=list)
+    blocking_scope: str | None = None
+    recommended_human_action: str | None = None
+    requires_human_confirmation_before_complete: bool = False
 
 
 class WorkerAdapter(Protocol):
@@ -233,6 +249,14 @@ def stage_result_from(result: WorkerResult, worker: Worker, role: Role) -> Stage
         finding_category=result.finding_category,
         question=result.question,
         answer=result.answer,
+        decision_class=result.decision_class,
+        provisional_answer=result.provisional_answer,
+        risk=result.risk,
+        reversible=result.reversible,
+        affected_artifacts=result.affected_artifacts,
+        blocking_scope=result.blocking_scope,
+        recommended_human_action=result.recommended_human_action,
+        requires_human_confirmation_before_complete=result.requires_human_confirmation_before_complete,
     )
 
 
@@ -323,9 +347,16 @@ _PHASE_TASKS: dict[Phase, str] = {
     ),
     Phase.QANDA: (
         "Answer the open question in QandA.md using only the existing documents. "
-        "Return DONE with the decision in `answer` if the documents settle it, "
+        "First classify any unresolved question as exactly one of "
+        "DECIDABLE_FROM_ARTIFACT, LOW_RISK_REVERSIBLE, HIGH_RISK_PRODUCT_DECISION, "
+        "EXTERNAL_CONTRACT, SECURITY_OR_SAFETY, IRREVERSIBLE_OR_DATA_LOSS, or UNKNOWN. "
+        "Return DONE with `answer` if the documents settle it. For LOW_RISK_REVERSIBLE, "
+        "return DONE with `decision_class`, `provisional_answer`, `risk=LOW`, and "
+        "`reversible=true`; this is a provisional decision, not a formal specification. "
         "LOCAL_FIX if answering it also requires changing the output document, or "
         "CANNOT_ANSWER if no document settles it and answering would be a guess. "
+        "For CANNOT_ANSWER, include the classification, risk, reversible, and "
+        "recommended_human_action fields. "
         "Cite the documents your answer rests on."
     ),
 }

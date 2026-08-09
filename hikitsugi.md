@@ -5,6 +5,12 @@
 
 ---
 
+Instruction 009 adds structured question classification, SQLite-backed provisional
+decisions, batched human answers, and a normal CompleteGate blocker for unapproved
+provisional decisions. The corrected Codex-only live E2E reached COMPLETE in an
+isolated scratch Git workspace through the real TEST and REVIEW paths. Evidence is
+in `instructions/result-2026-08-09-016.md`.
+
 ## COMPLETE gate status
 
 §17-15 is implemented. COMPLETE requires machine-checked VALID design artifacts,

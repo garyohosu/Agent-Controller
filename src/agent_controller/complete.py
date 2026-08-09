@@ -20,6 +20,7 @@ class CompleteBlockerCode(StrEnum):
     REVIEW_NOT_PASS = "REVIEW_NOT_PASS"
     OPEN_QUESTION = "OPEN_QUESTION"
     HUMAN_REQUIRED_QUESTION = "HUMAN_REQUIRED_QUESTION"
+    UNAPPROVED_PROVISIONAL_DECISION = "UNAPPROVED_PROVISIONAL_DECISION"
     README_NOT_SYNCED = "README_NOT_SYNCED"
     GIT_DIRTY = "GIT_DIRTY"
     GIT_UNCOMMITTED = "GIT_UNCOMMITTED"
@@ -59,9 +60,10 @@ class CompleteGate:
         ArtifactKind.TESTCASE,
     )
 
-    def __init__(self, store: Store, workspace: str | Path = ".") -> None:
+    def __init__(self, store: Store, workspace: str | Path = ".", *, allow_provisional: bool = False) -> None:
         self.store = store
         self.workspace = Path(workspace).resolve()
+        self.allow_provisional = allow_provisional
 
     def _git(self, *args: str) -> str:
         process = subprocess.run(
@@ -135,6 +137,15 @@ class CompleteGate:
             blockers.append(CompleteBlocker(
                 code=CompleteBlockerCode.HUMAN_REQUIRED_QUESTION,
                 detail="questions table contains questions waiting on a human",
+            ))
+        if not self.allow_provisional and any(
+            item.status.value == "PROVISIONAL"
+            and item.requires_human_confirmation_before_complete
+            for item in questions
+        ):
+            blockers.append(CompleteBlocker(
+                code=CompleteBlockerCode.UNAPPROVED_PROVISIONAL_DECISION,
+                detail="questions table contains unapproved provisional decisions",
             ))
 
         readme = artifacts.get(ArtifactKind.README)

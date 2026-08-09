@@ -75,6 +75,70 @@ def answer_question(
     """
     if not answer.strip():
         raise AnswerRejected("the answer is empty")
+    run = store.load_run(run_id)
+    if run is None:
+        raise AnswerRejected(f"run {run_id} does not exist")
+    question = find_question(store, run_id, question_id)
+    if question.status != QuestionStatus.HUMAN_REQUIRED:
+        raise AnswerRejected(
+            f"{question_id} is {question.status.value}; only HUMAN_REQUIRED questions are waiting for a person"
+        )
+    qanda = QandaFile(store, workspace)
+    qanda.answer(question, answer.strip(), answered_by=Worker.HUMAN)
+    notes = [f"question={question.question_id}", "answered_by=HUMAN"]
+    if question.return_phase is not None:
+        if run.return_phase != question.return_phase:
+            notes.append(
+                f"resume {question.return_phase.value} (asked there; "
+                f"run was suspended in {run.return_phase.value if run.return_phase else '-'})"
+            )
+        run.return_phase = question.return_phase
+    if upstream_target is not None:
+        run.pending_upstream_stage = upstream_target
+        run.return_phase = None
+        notes.append(f"upstream={upstream_target.value}")
+        logger.record(run, Event.HUMAN_ANSWER, to_substate=question.source_stage, reason=" | ".join([*notes, "upstream change required"]))
+        transition = logger.record(run, Event.UPSTREAM_CHANGE_REQUIRED, to_substate=question.source_stage, reason=" | ".join(notes))
+    else:
+        transition = logger.record(run, Event.HUMAN_ANSWER, to_substate=question.source_stage, reason=" | ".join(notes))
+    return run, question, transition
+
+
+def answer_batch(
+    store: Store,
+    logger: TransitionLogger,
+    run_id: str,
+    answers: list[dict[str, str]],
+    workspace: str | Path | None = None,
+) -> list[tuple[RunState, Question, Transition]]:
+    """Answer several queued questions with one human-resume transition."""
+    if not answers:
+        raise AnswerRejected("answer batch is empty")
+    validated: list[tuple[str, str]] = []
+    for item in answers:
+        question_id = str(item.get("question_id") or "")
+        answer = str(item.get("answer") or "")
+        if not question_id or not answer.strip():
+            raise AnswerRejected("each batch item needs question_id and non-empty answer")
+        question = find_question(store, run_id, question_id)
+        if question.status != QuestionStatus.HUMAN_REQUIRED:
+            raise AnswerRejected(
+                f"{question_id} is {question.status.value}; only HUMAN_REQUIRED questions are waiting for a person"
+            )
+        validated.append((question_id, answer.strip()))
+
+    first_run, first_question, transition = answer_question(
+        store, logger, run_id, validated[0][0], validated[0][1], workspace=workspace
+    )
+    results = [(first_run, first_question, transition)]
+    qanda = QandaFile(store, workspace)
+    for question_id, answer in validated[1:]:
+        question = find_question(store, run_id, question_id)
+        qanda.answer(question, answer, answered_by=Worker.HUMAN)
+        results.append((first_run, question, transition))
+    return results
+    if not answer.strip():
+        raise AnswerRejected("the answer is empty")
 
     run = store.load_run(run_id)
     if run is None:

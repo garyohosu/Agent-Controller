@@ -272,6 +272,16 @@ def result_from_output(text: str, raw: str, *, classify_resource: bool = True) -
         question=field("question"),
         answer=field("answer"),
         files_changed=[str(item) for item in payload.get("files_changed") or []],
+        decision_class=field("decision_class"),
+        provisional_answer=field("provisional_answer"),
+        risk=field("risk"),
+        reversible=payload.get("reversible"),
+        affected_artifacts=[str(item) for item in payload.get("affected_artifacts") or []],
+        blocking_scope=field("blocking_scope"),
+        recommended_human_action=field("recommended_human_action"),
+        requires_human_confirmation_before_complete=bool(
+            payload.get("requires_human_confirmation_before_complete", False)
+        ),
         raw_output=raw,
     )
 

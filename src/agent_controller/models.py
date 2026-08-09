@@ -402,6 +402,7 @@ class QuestionStatus(StrEnum):
     """QandA.md の 1 件の状態（指示書 §9）。"""
 
     OPEN = "OPEN"
+    PROVISIONAL = "PROVISIONAL"
     ANSWERED = "ANSWERED"
     HUMAN_REQUIRED = "HUMAN_REQUIRED"
 
@@ -418,6 +419,15 @@ class Question(BaseModel):
 
     run_id: str
     status: QuestionStatus = QuestionStatus.OPEN
+
+    classification: str | None = None
+    provisional_answer: str | None = None
+    risk: str | None = None
+    reversible: bool | None = None
+    blocking_scope: str | None = None
+    recommended_human_action: str | None = None
+    affected_artifacts: list[str] = Field(default_factory=list)
+    requires_human_confirmation_before_complete: bool = False
 
     question: str
     context: str | None = None

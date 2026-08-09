@@ -1,5 +1,11 @@
 # Agent Controller
 
+Instruction 009 adds structured question classification, SQLite-backed provisional
+decisions, batched human answers, and a normal CompleteGate blocker for unapproved
+provisional decisions. The corrected Codex-only live E2E reached COMPLETE in an
+isolated scratch Git workspace through DESIGN → IMPLEMENT → TEST → REVIEW → DOC_SYNC.
+Evidence: `instructions/result-2026-08-09-016.md`.
+
 ## COMPLETE gate (§17-15)
 
 The Controller now exposes a machine-only `CompleteGate`. It checks SQLite artifact
