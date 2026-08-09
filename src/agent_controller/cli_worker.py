@@ -16,7 +16,9 @@ import shutil
 import subprocess
 import tempfile
 import time
+import uuid
 from collections.abc import Callable, Sequence
+from datetime import datetime, timezone
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -309,6 +311,9 @@ class CliWorker:
         return result.stdout
 
     def run(self, request: WorkerRequest) -> WorkerResult:
+        invocation_id = str(uuid.uuid4())
+        started_wall = datetime.now(timezone.utc)
+        started_mono = time.monotonic()
         prompt = build_prompt(request)
         Path(request.workspace).mkdir(parents=True, exist_ok=True)
 
@@ -320,6 +325,10 @@ class CliWorker:
 
         raw = "\n".join(part for part in (text, result.stderr) if part).strip()
         diagnostic = {
+            "invocation_id": invocation_id,
+            "started_at": started_wall.isoformat(),
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "timeout_seconds": self.timeout,
             "worker": self.name.value,
             "role": request.role.value,
             "state": request.state.value,
@@ -329,13 +338,21 @@ class CliWorker:
             "resolved_executable": result.resolved_executable or resolve_executable(command[0]),
             "raw_exit_code": result.exit_code,
             "signed_exit_code": signed_exit_code(result.exit_code),
-            "elapsed_ms": result.elapsed_ms,
+            "elapsed_ms": result.elapsed_ms if result.elapsed_ms is not None else int((time.monotonic() - started_mono) * 1000),
             "timed_out": result.timed_out,
+            "prompt_chars": len(prompt),
+            "prompt_utf8_bytes": len(prompt.encode("utf-8")),
+            "artifact_chars": sum(len(value) for value in request.artifact_contents.values()),
+            "question_chars": len(request.directive) if request.phase and request.phase.value == "QANDA" else 0,
+            "stdout_chars": len(text),
+            "stderr_chars": len(result.stderr),
+            "result_event": None,
             "stdout_tail": text[-1000:],
             "stderr_tail": result.stderr[-1000:],
         }
 
         if result.timed_out:
+            diagnostic["result_event"] = Event.WORKER_ERROR.value
             return WorkerResult(
                 event=Event.WORKER_ERROR,
                 reason=f"{self.name.value} timed out after {self.timeout}s",
@@ -345,6 +362,7 @@ class CliWorker:
 
         if result.exit_code != 0:
             if failure_is_resource_limit(text, result.stderr):
+                diagnostic["result_event"] = Event.WORKER_RESOURCE_LIMIT.value
                 return WorkerResult(
                     event=Event.WORKER_RESOURCE_LIMIT,
                     reason=f"{self.name.value} hit a usage limit",
@@ -359,6 +377,7 @@ class CliWorker:
             )
 
         parsed = result_from_output(text, raw, classify_resource=False)
+        diagnostic["result_event"] = parsed.event.value
         parsed.diagnostic = diagnostic
         return parsed
 
@@ -430,14 +449,25 @@ class ClaudeCodeWorker(CliWorker):
         return result.stdout
 
 
-def _diagnostic(worker: Worker, request: WorkerRequest, command: list[str], result: CommandResult, text: str) -> dict:
+def _diagnostic(worker: Worker, request: WorkerRequest, command: list[str], result: CommandResult, text: str, prompt: str = "", timeout_seconds: int | None = None) -> dict:
+    elapsed = result.elapsed_ms or 0
+    finished = datetime.now(timezone.utc)
     return {
+        "invocation_id": str(uuid.uuid4()),
+        "started_at": datetime.fromtimestamp(finished.timestamp() - elapsed / 1000, timezone.utc).isoformat(),
+        "finished_at": finished.isoformat(),
+        "timeout_seconds": timeout_seconds,
         "worker": worker.value, "role": request.role.value, "state": request.state.value,
         "stage": request.stage.value if request.stage else None,
         "phase": request.phase.value if request.phase else None,
         "argv": command, "resolved_executable": result.resolved_executable or resolve_executable(command[0]),
         "raw_exit_code": result.exit_code, "signed_exit_code": signed_exit_code(result.exit_code),
         "elapsed_ms": result.elapsed_ms, "timed_out": result.timed_out,
+        "prompt_chars": len(prompt), "prompt_utf8_bytes": len(prompt.encode("utf-8")),
+        "artifact_chars": sum(len(value) for value in request.artifact_contents.values()),
+        "question_chars": len(request.directive) if request.phase and request.phase.value == "QANDA" else 0,
+        "stdout_chars": len(text), "stderr_chars": len(result.stderr),
+        "result_event": None,
         "stdout_tail": text[-1000:], "stderr_tail": result.stderr[-1000:],
     }
 
@@ -458,13 +488,16 @@ class GrokCliWorker(CliWorker):
         except json.JSONDecodeError:
             text = result.stdout
         raw = "\n".join(part for part in (text, result.stderr) if part).strip()
-        diagnostic = _diagnostic(self.name, request, command, result, text)
+        diagnostic = _diagnostic(self.name, request, command, result, text, prompt, self.timeout)
         if result.timed_out:
+            diagnostic["result_event"] = Event.WORKER_ERROR.value
             return WorkerResult(event=Event.WORKER_ERROR, reason=f"{self.name.value} timed out", raw_output=raw, diagnostic=diagnostic)
         if result.exit_code != 0:
             event = Event.WORKER_RESOURCE_LIMIT if failure_is_resource_limit(text, result.stderr) else Event.WORKER_ERROR
+            diagnostic["result_event"] = event.value
             return WorkerResult(event=event, reason=f"{self.name.value} exited with {result.exit_code}", raw_output=raw, diagnostic=diagnostic)
         parsed = result_from_output(text, raw, classify_resource=False)
+        diagnostic["result_event"] = parsed.event.value
         parsed.diagnostic = diagnostic
         return parsed
 
@@ -489,12 +522,15 @@ class AgyCliWorker(CliWorker):
         command = ["agy", "--print", prompt]
         result = self.runner(command, request.workspace, self.timeout, "")
         raw = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
-        diagnostic = _diagnostic(self.name, request, ["agy", "--print", "<prompt>"], result, result.stdout)
+        diagnostic = _diagnostic(self.name, request, ["agy", "--print", "<prompt>"], result, result.stdout, prompt, self.timeout)
         if result.timed_out:
+            diagnostic["result_event"] = Event.WORKER_ERROR.value
             return WorkerResult(event=Event.WORKER_ERROR, reason=f"{self.name.value} timed out", raw_output=raw, diagnostic=diagnostic)
         if result.exit_code != 0:
             event = Event.WORKER_RESOURCE_LIMIT if failure_is_resource_limit(result.stdout, result.stderr) else Event.WORKER_ERROR
+            diagnostic["result_event"] = event.value
             return WorkerResult(event=event, reason=f"{self.name.value} exited with {result.exit_code}", raw_output=raw, diagnostic=diagnostic)
         parsed = result_from_output(result.stdout, raw, classify_resource=False)
+        diagnostic["result_event"] = parsed.event.value
         parsed.diagnostic = diagnostic
         return parsed

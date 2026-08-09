@@ -22,6 +22,8 @@ subprocess から返ってくる文字列にはその保証が無い。
 
 from __future__ import annotations
 
+import json
+import time
 from typing import Any, Protocol
 from pathlib import Path
 
@@ -94,6 +96,7 @@ class WorkerRequest(BaseModel):
     （memo.md §4.2）。だから input_artifacts は「読んでよいファイル」の列挙になる。
     """
 
+    run_id: str | None = None
     role: Role
     state: State
     stage: DocumentStage | None = None
@@ -278,6 +281,7 @@ def build_request(
         if path.is_file():
             contents[artifact] = path.read_text(encoding="utf-8", errors="replace")[:100_000]
     return WorkerRequest(
+        run_id=run.run_id,
         role=role,
         state=run.current_state,
         stage=run.substate,
@@ -397,6 +401,13 @@ def qanda_directive(base: str, question: Question | None) -> str:
     return "\n".join(lines)
 
 
+def _write_diagnostic(workspace: str, payload: dict[str, Any]) -> None:
+    """Write bounded per-invocation diagnostics outside the Git workspace."""
+    target = Path(workspace).resolve().parent / "agent-controller-diagnostics.jsonl"
+    with target.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+
+
 def phase_handlers_from_worker(
     workers: WorkerAdapter | WorkerRouter | dict[Role, WorkerAdapter | list[WorkerAdapter]],
     workspace: str,
@@ -471,7 +482,25 @@ def phase_handlers_from_worker(
             failures: list[str] = []
             for index, candidate in enumerate(candidates):
                 selected = candidate
+                invocation_started = time.perf_counter()
                 result = candidate.run(request)
+                diagnostic = dict(result.diagnostic)
+                diagnostic.update({
+                    "run_id": run.run_id,
+                    "state": run.current_state.value,
+                    "stage": run.substate.value if run.substate else None,
+                    "phase": phase.value,
+                    "role": role.value,
+                    "worker": candidate.name.value,
+                    "candidate_index": index,
+                    "controller_elapsed_ms": int((time.perf_counter() - invocation_started) * 1000),
+                    "result_event": result.event.value,
+                    "prompt_chars": diagnostic.get("prompt_chars", len(request.directive)),
+                    "artifact_chars": diagnostic.get(
+                        "artifact_chars", sum(len(value) for value in request.artifact_contents.values())
+                    ),
+                })
+                _write_diagnostic(workspace, diagnostic)
                 if result.event in (Event.WORKER_ERROR, Event.WORKER_RESOURCE_LIMIT):
                     summary = diagnostic_summary(result)
                     if summary:

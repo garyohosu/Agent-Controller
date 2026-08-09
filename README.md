@@ -1,11 +1,10 @@
 # Agent Controller
 
-Instruction 010 completed the final implementation-gap audit. REVIEW findings now
-become the next IMPLEMENT directive, README freshness is checked by CompleteGate,
-and DOC_SYNC accepts a controller-owned sync callback. Offline verification is
-`269 passed, 4 skipped`. The audit result is
-`instructions/result-2026-08-09-017.md`; the post-audit live E2E remains limited by
-a Codex REVIEW QUESTION timeout and is not claimed as complete.
+Instruction 011 traced the prior REVIEW/Q&A timeout with per-invocation diagnostics.
+The root cause was the missing Main Graph REVIEW QUESTION → Director/QANDA route,
+not a Codex timeout or oversized prompt. After the fix, the Codex-only live E2E
+reached COMPLETE and verification is `270 passed, 4 skipped`.
+Evidence: `instructions/result-2026-08-09-018.md`.
 
 ## COMPLETE gate (§17-15)
 

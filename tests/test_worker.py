@@ -334,6 +334,16 @@ class TestProcessFailures:
         assert result.event == Event.WORKER_ERROR
         assert result.diagnostic["raw_exit_code"] == 0
 
+    def test_diagnostic_contains_invocation_and_prompt_sizes(self, tmp_path: Path) -> None:
+        result = CodexCliWorker(runner=fake_runner('{"event": "PASS"}')).run(
+            make_request(workspace=str(tmp_path), phase=Phase.QANDA)
+        )
+        assert result.diagnostic["invocation_id"]
+        assert result.diagnostic["prompt_chars"] > 0
+        assert result.diagnostic["prompt_utf8_bytes"] >= result.diagnostic["prompt_chars"]
+        assert result.diagnostic["stdout_chars"] > 0
+        assert result.diagnostic["result_event"] == "PASS"
+
     def test_windows_exit_code_keeps_raw_and_signed_diagnostic(self) -> None:
         result = CodexCliWorker(runner=fake_runner(exit_code=4294967295, stderr="fatal")).run(make_request())
         assert result.event == Event.WORKER_ERROR

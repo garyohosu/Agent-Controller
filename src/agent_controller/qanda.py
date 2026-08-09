@@ -23,6 +23,9 @@ QandA.md はそこから毎回まるごと生成する。遷移ログ（§10）�
 
 from __future__ import annotations
 
+import json
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from agent_controller.models import (
@@ -135,6 +138,20 @@ class QandaFile:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(render_qanda(self.store.questions(run_id)), encoding="utf-8")
 
+    def _timing(self, step: str, run_id: str, started: float) -> None:
+        if self.workspace is None:
+            return
+        payload = {
+            "kind": "qanda_step",
+            "step": step,
+            "run_id": run_id,
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "elapsed_ms": int((time.perf_counter() - started) * 1000),
+        }
+        target = self.workspace.resolve().parent / "agent-controller-diagnostics.jsonl"
+        with target.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
     # -- lifecycle -----------------------------------------------------------
 
     def open_question(
@@ -148,6 +165,7 @@ class QandaFile:
         return_phase: Phase | None = None,
     ) -> Question:
         """質問を 1 件立てる。戻り先は質問した時点の位置を控えておく。"""
+        started = time.perf_counter()
         record = Question(
             question_id=self.store.next_question_id(run.run_id),
             run_id=run.run_id,
@@ -164,6 +182,7 @@ class QandaFile:
         )
         self.store.save_question(record)
         self.refresh(run.run_id)
+        self._timing("question_saved_and_rendered", run.run_id, started)
         return record
 
     def answer(
@@ -172,11 +191,13 @@ class QandaFile:
         answer: str,
         answered_by: Worker | None = None,
     ) -> Question:
+        started = time.perf_counter()
         question.status = QuestionStatus.ANSWERED
         question.answer = answer
         question.answered_by = answered_by
         self.store.save_question(question)
         self.refresh(question.run_id)
+        self._timing("answer_saved_and_rendered", question.run_id, started)
         return question
 
     def provisional_decision(
@@ -191,6 +212,7 @@ class QandaFile:
         blocking_scope: str | None = None,
         recommended_human_action: str | None = None,
     ) -> Question:
+        started = time.perf_counter()
         question.status = QuestionStatus.PROVISIONAL
         question.classification = classification
         question.provisional_answer = answer
@@ -202,10 +224,12 @@ class QandaFile:
         question.requires_human_confirmation_before_complete = True
         self.store.save_question(question)
         self.refresh(question.run_id)
+        self._timing("provisional_saved_and_rendered", question.run_id, started)
         return question
 
     def escalate_to_human(self, question: Question, reason: str | None = None) -> Question:
         """既存成果物から答えられない。推測で埋めずに人間へ渡す（§9）。"""
+        started = time.perf_counter()
         question.status = QuestionStatus.HUMAN_REQUIRED
         if reason:
             question.context = (
@@ -213,6 +237,7 @@ class QandaFile:
             )
         self.store.save_question(question)
         self.refresh(question.run_id)
+        self._timing("human_required_saved_and_rendered", question.run_id, started)
         return question
 
     def oldest_open(self, run_id: str) -> Question | None:
