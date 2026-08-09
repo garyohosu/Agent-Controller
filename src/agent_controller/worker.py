@@ -80,6 +80,7 @@ class WorkerOutput(BaseModel):
     """QUESTION のとき、何が判断できないのか（§9）。"""
 
     answer: str | None = None
+    action: str | None = None
     """QANDA で回答したとき、その答え（§9）。"""
 
     upstream_target: str | None = None
@@ -136,6 +137,7 @@ class WorkerResult(BaseModel):
 
     question: str | None = None
     answer: str | None = None
+    action: str | None = None
 
     files_changed: list[str] = Field(default_factory=list)
     decision_class: str | None = None
@@ -280,6 +282,7 @@ def stage_result_from(result: WorkerResult, worker: Worker, role: Role) -> Stage
         finding_category=result.finding_category,
         question=result.question,
         answer=result.answer,
+        action=result.action,
         decision_class=result.decision_class,
         provisional_answer=result.provisional_answer,
         risk=result.risk,
@@ -389,6 +392,9 @@ _PHASE_TASKS: dict[Phase, str] = {
         "CANNOT_ANSWER if no document settles it and answering would be a guess. "
         "For CANNOT_ANSWER, include the classification, risk, reversible, and "
         "recommended_human_action fields. "
+        "For every successful QANDA answer, also return exactly one action: "
+        "ANSWER_ONLY, IMPLEMENT_CHANGE_REQUIRED, ARTIFACT_CHANGE_REQUIRED, "
+        "UPSTREAM_CHANGE_REQUIRED, or HUMAN_REQUIRED. "
         "Cite the documents your answer rests on."
     ),
 }

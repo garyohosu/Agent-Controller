@@ -68,6 +68,7 @@ class StageResult(BaseModel):
     finding_category: str | None = None
     question: str | None = None
     answer: str | None = None
+    action: str | None = None
     decision_class: str | None = None
     provisional_answer: str | None = None
     risk: str | None = None
@@ -260,19 +261,29 @@ def wired_handlers(
         if reviewer is None:
             return StageResult(event=Event.WORKER_ERROR, reason="REVIEW worker is not configured")
         try:
-            handlers = phase_handlers_from_worker(
-                reviewer,
-                workspace,
-                ["CODE"],
-                "CODE",
-                allowed_events={
-                    Phase.REVIEW_LIGHT: [
-                        *allowed_stage_events(Phase.REVIEW_LIGHT),
-                        Event.FAIL,
-                    ]
-                },
-                git=git,
-            )
+            def review_once(directive: str | None = None):
+                directives = dict(PHASE_DIRECTIVES)
+                if directive:
+                    directives[Phase.REVIEW_LIGHT] = directive
+                review_inputs = ["CODE"]
+                if (Path(workspace) / "QandA.md").is_file():
+                    review_inputs.append("QandA.md")
+                return phase_handlers_from_worker(
+                    reviewer,
+                    workspace,
+                    review_inputs,
+                    "CODE",
+                    allowed_events={
+                        Phase.REVIEW_LIGHT: [
+                            *allowed_stage_events(Phase.REVIEW_LIGHT),
+                            Event.FAIL,
+                        ]
+                    },
+                    directives=directives,
+                    git=git,
+                )
+
+            handlers = review_once()
             result = handlers[Phase.REVIEW_LIGHT](run)
             if result.event == Event.QUESTION and qanda is not None:
                 question = qanda.open_question(
@@ -291,6 +302,7 @@ def wired_handlers(
                     git=git,
                 )[Phase.QANDA](run)
                 decision_class = getattr(director, "decision_class", None)
+                action = getattr(director, "action", None) or "ANSWER_ONLY"
                 if director.event in (Event.DONE, Event.LOCAL_FIX) and decision_class == "LOW_RISK_REVERSIBLE":
                     qanda.provisional_decision(
                         question,
@@ -305,10 +317,26 @@ def wired_handlers(
                         blocking_scope=getattr(director, "blocking_scope", None),
                         recommended_human_action=getattr(director, "recommended_human_action", None),
                     )
+                    action = action or "ANSWER_ONLY"
                     result = handlers[Phase.REVIEW_LIGHT](run)
                 elif director.event in (Event.DONE, Event.LOCAL_FIX):
                     qanda.answer(question, director.answer or director.reason or "(answered)", answered_by=director.worker)
-                    result = handlers[Phase.REVIEW_LIGHT](run)
+                    if action == "HUMAN_REQUIRED":
+                        qanda.escalate_to_human(question, director.reason)
+                        return StageResult(event=Event.CANNOT_ANSWER, role=result.role, worker=result.worker, reason=director.reason, action=action)
+                    if action == "IMPLEMENT_CHANGE_REQUIRED":
+                        review_directives[run.run_id] = f"Apply the Director answer to the implementation, then return DONE. Answer: {director.answer or director.reason}"
+                        return StageResult(event=Event.LOCAL_FIX, role=result.role, worker=result.worker, reason=director.reason, action=action)
+                    if action == "ARTIFACT_CHANGE_REQUIRED":
+                        return StageResult(event=Event.SERIOUS_ISSUE, role=result.role, worker=result.worker, reason=director.reason, action=action)
+                    if action == "UPSTREAM_CHANGE_REQUIRED":
+                        return StageResult(event=Event.UPSTREAM_CHANGE_REQUIRED, role=result.role, worker=result.worker, reason=director.reason, action=action)
+                    answer_directive = (
+                        "Re-review the CODE using this answered Q&A as authoritative context. "
+                        "Do not ask the same question again; return PASS if the answer settles it.\n"
+                        f"Answered question: {question.question}\nAnswer: {director.answer or director.reason}"
+                    )
+                    result = review_once(answer_directive)[Phase.REVIEW_LIGHT](run)
                 else:
                     qanda.escalate_to_human(question, director.reason)
                     return StageResult(event=Event.CANNOT_ANSWER, role=result.role, worker=result.worker, reason=director.reason)
@@ -329,6 +357,7 @@ def wired_handlers(
             finding_code=getattr(result, "finding_code", None),
             finding_subject=getattr(result, "finding_subject", None),
             finding_category=getattr(result, "finding_category", None),
+            action=getattr(result, "action", None),
         )
 
     def doc_sync_handler(run: RunState) -> StageResult:
@@ -341,6 +370,8 @@ def wired_handlers(
             status=ArtifactStatus.VALID, path="README.md", reason=status,
         ))
         try:
+            if (Path(workspace) / "QandA.md").is_file():
+                git.commit_paths(["QandA.md"])
             git.push()
         except Exception as error:
             return StageResult(

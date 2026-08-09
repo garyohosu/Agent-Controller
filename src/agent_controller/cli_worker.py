@@ -273,6 +273,7 @@ def result_from_output(text: str, raw: str, *, classify_resource: bool = True) -
         finding_category=field("finding_category"),
         question=field("question"),
         answer=field("answer"),
+        action=field("action"),
         files_changed=[str(item) for item in payload.get("files_changed") or []],
         decision_class=field("decision_class"),
         provisional_answer=field("provisional_answer"),

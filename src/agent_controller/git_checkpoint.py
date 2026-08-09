@@ -98,6 +98,14 @@ class GitCheckpointManager:
             observation = self.observe()
         return observation
 
+    def commit_paths(self, paths: list[str], event: Event = Event.LOCAL_FIX) -> GitObservation:
+        """Commit explicitly controller-owned files, including new Q&A output."""
+        existing = [path for path in paths if (self.repo / path).is_file()]
+        if existing:
+            _run(self.repo, "add", "--", *existing)
+            _run(self.repo, "commit", "-m", f"controller: {event.value} metadata")
+        return self.observe()
+
     def rollback(self, checkpoint: str) -> GitObservation:
         """Reset tracked state to checkpoint; never run git clean."""
         _run(self.repo, "reset", "--hard", checkpoint)

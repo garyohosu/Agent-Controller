@@ -12,6 +12,7 @@ from agent_controller.models import (
     ArtifactState,
     ArtifactStatus,
     Event,
+    Phase,
     RunState,
     State,
     Worker,
@@ -79,6 +80,29 @@ class FindingWorker:
             return WorkerResult(event=Event.PASS)
         (self.root / "CODE.txt").write_text("implemented\n")
         return WorkerResult(event=Event.DONE, files_changed=["CODE.txt"])
+
+
+class AnsweringReviewWorker(FakeWorker):
+    def __init__(self, name: Worker, root: Path) -> None:
+        super().__init__(name, root, Event.PASS)
+        self.review_calls = 0
+
+    def run(self, request: WorkerRequest) -> WorkerResult:
+        if request.phase == Phase.REVIEW_LIGHT:
+            self.review_calls += 1
+            if self.review_calls == 1:
+                return WorkerResult(
+                    event=Event.QUESTION,
+                    question="Is the existing CODE behavior acceptable?",
+                )
+            return WorkerResult(event=Event.PASS)
+        if request.phase == Phase.QANDA:
+            return WorkerResult(
+                event=Event.DONE,
+                answer="Yes; the existing CODE and tests settle this.",
+                action="ANSWER_ONLY",
+            )
+        return super().run(request)
 
 
 def test_wired_main_graph_reaches_complete(tmp_path: Path) -> None:
@@ -153,6 +177,26 @@ def test_review_finding_becomes_next_implementer_directive(tmp_path: Path) -> No
         assert final.current_state == State.COMPLETE
         assert reviewer.calls == 2
         assert any("MISSING_VALIDATION" in directive for directive in implementer.seen_directives)
+
+
+def test_review_question_answer_only_retries_with_answer_context(tmp_path: Path) -> None:
+    root = pushed_repo(tmp_path)
+    with Store(tmp_path / "controller.db") as store:
+        logger = TransitionLogger(store)
+        run = RunState(project_id="p", run_id="r")
+        store.save_run(run)
+        reviewer = AnsweringReviewWorker(Worker.CLAUDE_CODE, root)
+        handlers = wired_handlers(
+            logger,
+            workspace=root,
+            implementer=FakeWorker(Worker.CODEX_CLI, root, Event.DONE),
+            reviewer=reviewer,
+            test_runner=lambda current: 0,
+        )
+        final = run_graph(run, logger, handlers, complete_gate=CompleteGate(store, root))
+        assert final.current_state == State.COMPLETE
+        assert reviewer.review_calls == 2
+        assert not store.open_questions("r")
 
 
 def test_doc_sync_can_run_controller_owned_readme_sync(tmp_path: Path) -> None:
