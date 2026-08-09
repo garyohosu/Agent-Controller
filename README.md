@@ -14,7 +14,10 @@ resolved executable, elapsed time, and output tails, and reviewer fallback keeps
 the same State/Stage/Phase checkpoint. Live AI E2E was re-run in isolated scratch
 repositories but did not reach COMPLETE: Claude's live session reported disabled
 filesystem tools and the graph stopped at HUMAN_REQUIRED; see
-`instructions/result-2026-08-09-014.md`.
+`instructions/result-2026-08-09-014.md`. Phase-level diagnostics later showed that
+the cause was the old empty Claude tool list; `Read,Glob,Grep` now permits read-only
+review. A Codex-only E2E then stopped at an undecided missing-argument behavior in
+the SPEC, so COMPLETE is still not claimed; see `instructions/result-2026-08-09-015.md`.
 
 複数の AI エージェント（Claude Code / Codex CLI など）を決定論的な State Machine で制御し、
 設計・実装・テスト・レビュー・文書同期の工程を継続的に進めるコントローラー。

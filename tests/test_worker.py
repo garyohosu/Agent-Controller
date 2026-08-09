@@ -50,6 +50,7 @@ from agent_controller.worker import (
     WorkerResult,
     WorkerRouter,
     phase_handlers_from_worker,
+    phase_handlers_for_stages,
     validate_worker_result,
 )
 
@@ -185,6 +186,16 @@ class TestValidation:
 
 
 class TestBridge:
+    def test_stage_dispatch_keeps_stage_specific_inputs(self) -> None:
+        first = DocumentStageConfig(name=DocumentStage.SPEC, inputs=[], output="SPEC.md")
+        second = DocumentStageConfig(name=DocumentStage.USECASE, inputs=["SPEC.md"], output="USECASE.md")
+        runner = fake_runner('{"event": "PASS"}')
+        worker = CodexCliWorker(runner=runner)
+        handlers = phase_handlers_for_stages(worker, ".", [first, second])
+        handlers[Phase.REVIEW_DEEP](RunState(project_id="p", run_id="r", current_state=State.DESIGN, substate=DocumentStage.SPEC))
+        assert "SPEC.md" in runner.calls[0][3]
+        assert "USECASE.md" not in runner.calls[0][3]
+
     def test_roles_follow_the_phase(self) -> None:
         assert PHASE_ROLES[Phase.GENERATE] == Role.IMPLEMENTER
         assert PHASE_ROLES[Phase.REVIEW_LIGHT] == Role.REVIEWER
@@ -367,6 +378,7 @@ class TestCommands:
         ClaudeCodeWorker(runner=claude_runner).run(request)
         assert "plan" in claude_runner.calls[0][0]
         assert "--no-session-persistence" in claude_runner.calls[0][0]
+        assert "Read,Glob,Grep" in claude_runner.calls[0][0]
 
     def test_grok_envelope_text_and_command(self, tmp_path: Path) -> None:
         runner = fake_runner(json.dumps({"text": '{"event": "PASS"}'}))

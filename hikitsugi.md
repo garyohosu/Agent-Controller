@@ -18,6 +18,12 @@ Claude/Codex use role-aware permission profiles, and reviewer fallback preserves
 same checkpoint and position. CLI diagnostics retain raw/signed exit code, executable,
 elapsed time, and output tails. The latest live evidence and the DESIGN stale-State
 fix are in `instructions/result-2026-08-09-014.md`.
+Phase-level probes subsequently showed Claude/Codex/Grok PASS on the same SPEC deep
+review; agy returned exit 0 but no structured output because headless command
+permission was denied. A stage-aware handler dispatcher fixed phase-key overwriting.
+The stable Codex-only E2E then stopped at HUMAN_REQUIRED on an undecided missing-name
+behavior in SPEC/USECASE. COMPLETE remains unclaimed; see
+`instructions/result-2026-08-09-015.md`.
 
 ## これは何か
 

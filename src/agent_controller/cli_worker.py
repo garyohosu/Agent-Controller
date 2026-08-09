@@ -184,6 +184,10 @@ def build_prompt(request: WorkerRequest) -> str:
             *(f"- {path}" for path in request.input_artifacts),
             "",
         ]
+    if request.artifact_contents:
+        lines += ["## Controller-attached artifact contents"]
+        for path, content in request.artifact_contents.items():
+            lines += [f"### {path}", content, ""]
     if request.output_artifact:
         lines += [
             "## Output document (create or update this)",
@@ -397,7 +401,10 @@ class ClaudeCodeWorker(CliWorker):
             request.workspace,
         ]
         if request.role.value != "IMPLEMENTER":
-            command += ["--tools", "", "--no-session-persistence"]
+            # Reviewers may inspect artifacts but may not edit or execute shell
+            # commands.  An empty --tools list made the previous profile unable
+            # to read input documents at all.
+            command += ["--tools", "Read,Glob,Grep", "--no-session-persistence"]
         if self.model:
             command += ["--model", self.model]
         return command

@@ -23,6 +23,7 @@ subprocess から返ってくる文字列にはその保証が無い。
 from __future__ import annotations
 
 from typing import Any, Protocol
+from pathlib import Path
 
 from pydantic import BaseModel, Field
 
@@ -103,6 +104,9 @@ class WorkerRequest(BaseModel):
 
     input_artifacts: list[str] = Field(default_factory=list)
     """参照してよい成果物のパス。中身は Worker 自身に読ませる。"""
+
+    artifact_contents: dict[str, str] = Field(default_factory=dict)
+    """Controller-provided contents for Workers that cannot read the workspace."""
 
     output_artifact: str | None = None
     """書くべき成果物のパス。"""
@@ -243,6 +247,12 @@ def build_request(
     allowed_events: list[Event],
     expected_output_schema: dict[str, Any] | None = None,
 ) -> WorkerRequest:
+    contents: dict[str, str] = {}
+    root = Path(workspace)
+    for artifact in input_artifacts:
+        path = root / artifact
+        if path.is_file():
+            contents[artifact] = path.read_text(encoding="utf-8", errors="replace")[:100_000]
     return WorkerRequest(
         role=role,
         state=run.current_state,
@@ -250,6 +260,7 @@ def build_request(
         phase=phase,
         workspace=workspace,
         input_artifacts=input_artifacts,
+        artifact_contents=contents,
         output_artifact=output_artifact,
         directive=directive,
         expected_output_schema=expected_output_schema,
@@ -493,4 +504,39 @@ def phase_handlers_from_worker(
         return handler
 
     return {phase: make(phase) for phase in PHASE_ROLES}
+
+
+def phase_handlers_for_stages(
+    workers: WorkerAdapter | WorkerRouter | dict[Role, WorkerAdapter | list[WorkerAdapter]],
+    workspace: str,
+    stages: list[Any],
+    *,
+    git: GitCheckpointManager | None = None,
+) -> dict[Phase, PhaseHandler]:
+    """Dispatch phase handlers by the current DocumentStage.
+
+    A plain ``dict[Phase, handler]`` cannot represent different artifact inputs
+    for SPEC and TESTCASE; the dispatcher keeps those contracts separate while
+    preserving the existing phase and top-level state machines.
+    """
+    per_stage = {
+        stage.name: phase_handlers_from_worker(
+            workers, workspace, list(stage.inputs), stage.output, git=git
+        )
+        for stage in stages
+    }
+
+    def dispatch(phase: Phase) -> PhaseHandler:
+        def handler(run: RunState) -> StageResult:
+            if run.substate not in per_stage:
+                return StageResult(
+                    event=Event.WORKER_ERROR,
+                    role=PHASE_ROLES[phase],
+                    reason=f"no phase handler for document stage {run.substate}",
+                )
+            return per_stage[run.substate][phase](run)
+
+        return handler
+
+    return {phase: dispatch(phase) for phase in PHASE_ROLES}
 

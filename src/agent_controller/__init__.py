@@ -79,6 +79,7 @@ from agent_controller.worker import (
     WorkerRequest,
     WorkerResult,
     WorkerRouter,
+    phase_handlers_for_stages,
     phase_handlers_from_worker,
 )
 
@@ -144,6 +145,7 @@ __all__ = [
     "next_phase",
     "next_state",
     "phase_handlers_from_worker",
+    "phase_handlers_for_stages",
     "render_qanda",
     "run_design",
     "run_document_stage",
