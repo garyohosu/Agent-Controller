@@ -105,6 +105,40 @@ uv sync
 uv run pytest
 ```
 
+## v1.0 release preparation
+
+Agent Controller is a state-machine controller for a gated workflow:
+
+```text
+IDLE -> DESIGN -> IMPLEMENT -> TEST -> REVIEW -> DOC_SYNC -> COMPLETE
+```
+
+Install the package with `uv sync`. The supported command-line entry point is
+`agent-controller`; use `uv run agent-controller --help` for the complete
+interface. Every command operates on an explicit run and SQLite database:
+
+```bash
+uv run agent-controller --db controller.db --run RUN status
+uv run agent-controller --db controller.db --run RUN questions
+uv run agent-controller --db controller.db --run RUN show
+uv run agent-controller --db controller.db --run RUN answer QUESTION_ID "answer"
+uv run agent-controller --db controller.db --run RUN answer-batch answers.json
+```
+
+`status` reports the current state and machine-readable COMPLETE blockers;
+`questions` lists pending human questions; `answer` and `answer-batch` resume
+the recorded run. The controller treats SQLite and Git state as authoritative,
+including freshness, checkpoint, clean-tree, commit, and push checks.
+
+The package metadata currently targets v1.0.0. This repository is release-ready
+after the checks in `RELEASE_CHECKLIST.md`; no Git tag or hosted release is
+created by this preparation step.
+
+Known limitation: the long Claude Reviewer payload can still hit the configured
+worker timeout in some local environments. Claude's short read-only Reviewer
+contract and Codex fallback are covered; this known runtime limitation does not
+invalidate the Codex baseline path or COMPLETE gate.
+
 ## 設計資料
 
 - `memo.md` — 初期設計メモ
