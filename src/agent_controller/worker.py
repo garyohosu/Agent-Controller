@@ -229,39 +229,80 @@ def build_request(
     )
 
 
-PHASE_DIRECTIVES: dict[Phase, str] = {
+NO_GUESSING_RULE = (
+    "Do not fill in a judgement that the formal specification and design documents "
+    "do not support. If something you need is not decided by the documents you were "
+    "given, and getting it wrong would change the behaviour, the design, or the "
+    "tests downstream, return QUESTION instead of deciding it yourself. "
+    "A QUESTION must say what is undecided, which documents you checked, and why "
+    "those documents cannot settle it. "
+    "This is not an instruction to ask more often. Wording, obvious formatting "
+    "choices, and restatements of something the documents already decide are yours "
+    "to make - do not raise those as questions."
+)
+"""すべての意味判断 Worker にかかる共通制約（指示書 002 §1）。
+
+実 AI で回したとき、Codex は仕様の穴を QUESTION にせず自分で埋めて DONE を返した。
+Adapter の不具合ではなく、指示が「推測してはいけない」と縛っていなかったため。
+
+Adapter ごとに書き分けず、ここ 1 箇所に置く。
+"""
+
+REVIEWER_RULE = (
+    "Do not PASS something on your own interpretation when the documents do not "
+    "support it. If the document under review states something its inputs do not "
+    "decide, that gap was filled by guessing: return QUESTION rather than accepting "
+    "or silently rewriting it."
+)
+"""Reviewer への追加制約（指示書 002 §1）。"""
+
+
+_PHASE_TASKS: dict[Phase, str] = {
     Phase.GENERATE: (
         "Write the output document from the input documents. "
-        "Return DONE when the document is written, "
-        "QUESTION if the inputs do not tell you enough to write it, "
-        "or UPSTREAM_CHANGE_REQUIRED (with upstream_target) if an input document "
-        "is itself wrong or contradictory."
+        "Return DONE only when everything you wrote is traceable to an input "
+        "document. Return UPSTREAM_CHANGE_REQUIRED (with upstream_target) if an "
+        "input document is itself wrong or contradictory."
     ),
     Phase.REVIEW_LIGHT: (
-        "Review the output document against the input documents. Be brief: look only "
-        "for contradictions with the inputs, missing required sections, and broken "
+        "Review the output document against the input documents. Be brief: look for "
+        "contradictions with the inputs, missing required sections, and broken "
         "diagram syntax. Return PASS if it is acceptable, LOCAL_FIX if it needs "
-        "changes that stay inside this document, QUESTION if you need a decision, "
-        "SERIOUS_ISSUE if a light review is not enough to judge it, or "
-        "UPSTREAM_CHANGE_REQUIRED (with upstream_target) if an input document is wrong."
+        "changes that stay inside this document, SERIOUS_ISSUE if a light review is "
+        "not enough to judge it, or UPSTREAM_CHANGE_REQUIRED (with upstream_target) "
+        "if an input document is wrong."
     ),
     Phase.REVIEW_DEEP: (
         "Review the output document thoroughly against the input documents: "
         "completeness, consistency, and whether it can actually be implemented. "
-        "Return PASS, LOCAL_FIX, QUESTION, or UPSTREAM_CHANGE_REQUIRED "
-        "(with upstream_target)."
+        "Return PASS, LOCAL_FIX, or UPSTREAM_CHANGE_REQUIRED (with upstream_target)."
     ),
     Phase.FIX: (
         "Apply the changes the reviewer asked for. Do not redesign anything that was "
-        "not raised. Return DONE when the document is updated, or QUESTION if the "
-        "requested change is ambiguous."
+        "not raised, and do not settle an open point while you are here. "
+        "Return DONE when the document is updated."
     ),
     Phase.QANDA: (
         "Answer the open question in QandA.md using only the existing documents. "
         "Return DONE with the decision in `answer` if the documents settle it, "
         "LOCAL_FIX if answering it also requires changing the output document, or "
-        "CANNOT_ANSWER if no document settles it and answering would be a guess."
+        "CANNOT_ANSWER if no document settles it and answering would be a guess. "
+        "Cite the documents your answer rests on."
     ),
+}
+
+_REVIEW_PHASES_WITH_RULE = (Phase.REVIEW_LIGHT, Phase.REVIEW_DEEP)
+
+
+def _directive_for(phase: Phase) -> str:
+    parts = [_PHASE_TASKS[phase], "", NO_GUESSING_RULE]
+    if phase in _REVIEW_PHASES_WITH_RULE:
+        parts += ["", REVIEWER_RULE]
+    return "\n".join(parts)
+
+
+PHASE_DIRECTIVES: dict[Phase, str] = {
+    phase: _directive_for(phase) for phase in _PHASE_TASKS
 }
 """phase ごとの既定の指示。§17-13 で Director がこれを差し替える。"""
 

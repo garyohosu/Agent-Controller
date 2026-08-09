@@ -138,7 +138,9 @@ def failure_fingerprint(
     HUMAN_REQUIRED にすると、Worker の書き方の揺れだけで run が止まる。
     検出が鈍るだけの方がましなので、そちらへ倒す。
     """
-    if finding_code:
+    # code か subject のどちらかがあれば、そちらを使う。質問は subject（質問文）だけを
+    # 持ってくるので、code が無いときに reason へ落ちると自由文に戻ってしまう。
+    if finding_code or finding_subject:
         signature = "|".join(
             (
                 _normalize(finding_code),
@@ -148,10 +150,16 @@ def failure_fingerprint(
     else:
         signature = _normalize(reason)
 
+    # 同じ質問は、誰がどの phase で出しても同じ質問。実 AI で回したとき、
+    # GENERATE で聞いた質問を REVIEW でもう一度聞くのを取りこぼした（実測）。
+    # 質問だけは phase を指紋に含めない。
+    where_phase = "-" if event == Event.QUESTION else (
+        phase.value if phase is not None else "-"
+    )
     parts = (
         state.value,
         substate.value if substate is not None else "-",
-        phase.value if phase is not None else "-",
+        where_phase,
         event.value,
         signature,
     )

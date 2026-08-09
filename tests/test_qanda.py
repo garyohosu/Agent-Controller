@@ -17,7 +17,7 @@ from agent_controller.document_stage import (
     run_document_stage,
     stage_completed,
 )
-from agent_controller.guards import GuardLimits, LoopGuard
+from agent_controller.guards import GuardLimits, LoopGuard, failure_fingerprint
 from agent_controller.models import (
     DocumentStage,
     Event,
@@ -346,3 +346,59 @@ class TestHeaderCounts:
         rendered = render_qanda(store.questions(design_run.run_id))
         assert "- Open: 0" in rendered
         assert "- Waiting on a human: 1" in rendered
+
+
+class TestQuestionIdentity:
+    def test_the_same_question_from_a_different_phase_is_the_same_question(self) -> None:
+        """実 AI で取りこぼした形。GENERATE で聞いた質問を REVIEW でまた聞く。"""
+        text = "Should a NAME containing a newline be a usage error?"
+        asked_while_writing = failure_fingerprint(
+            State.DESIGN, DocumentStage.USECASE, Phase.GENERATE,
+            Event.QUESTION, "not specified", finding_subject=text,
+        )
+        asked_while_reviewing = failure_fingerprint(
+            State.DESIGN, DocumentStage.USECASE, Phase.REVIEW_LIGHT,
+            Event.QUESTION, "still not specified", finding_subject=text,
+        )
+        assert asked_while_writing == asked_while_reviewing
+
+    def test_other_findings_still_distinguish_the_phase(self) -> None:
+        """指摘は phase ごとに別物として扱う。緩めるのは質問だけ。"""
+        generating = failure_fingerprint(
+            State.DESIGN, DocumentStage.USECASE, Phase.GENERATE,
+            Event.LOCAL_FIX, "x", finding_code="MISSING_SECTION", finding_subject="UC-4",
+        )
+        reviewing = failure_fingerprint(
+            State.DESIGN, DocumentStage.USECASE, Phase.REVIEW_LIGHT,
+            Event.LOCAL_FIX, "x", finding_code="MISSING_SECTION", finding_subject="UC-4",
+        )
+        assert generating != reviewing
+
+    def test_a_question_repeated_across_phases_trips_the_guard(
+        self, store: Store, logger: TransitionLogger, tmp_path: Path
+    ) -> None:
+        run = RunState(project_id="p", run_id="run-across", current_state=State.DESIGN)
+        store.save_run(run)
+        text = "Should a NAME containing a newline be a usage error?"
+
+        handlers = ScriptedPhaseHandlers(
+            {
+                Phase.GENERATE: [
+                    StageResult(event=Event.QUESTION, worker=Worker.CODEX_CLI, question=text),
+                    Event.DONE,
+                ],
+                Phase.QANDA: [StageResult(event=Event.DONE, answer="yes, per SPEC")],
+                Phase.REVIEW_LIGHT: [
+                    StageResult(event=Event.QUESTION, worker=Worker.CODEX_CLI, question=text),
+                ],
+            }
+        ).as_handlers()
+
+        final = run_document_stage(
+            run, CLASS_STAGE, logger, handlers,
+            guard=LoopGuard(store, GuardLimits(max_same_fingerprint=1)),
+            qanda=QandaFile(store, tmp_path),
+        )
+
+        assert final.current_state == State.HUMAN_REQUIRED
+        assert logger.history("run-across")[-1].event == Event.NO_PROGRESS

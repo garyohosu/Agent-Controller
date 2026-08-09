@@ -37,8 +37,12 @@ from agent_controller.models import (
     Worker,
 )
 from agent_controller.transition_log import TransitionLogger
+from agent_controller.document_stage import allowed_stage_events
 from agent_controller.worker import (
+    NO_GUESSING_RULE,
+    PHASE_DIRECTIVES,
     PHASE_ROLES,
+    REVIEWER_RULE,
     WorkerRequest,
     WorkerResult,
     phase_handlers_from_worker,
@@ -370,3 +374,58 @@ class TestPrompt:
         assert "REVIEWER" in prompt
         assert "REVIEW_LIGHT" in prompt
         assert "CLASS" in prompt
+
+
+class TestDirectiveConstraints:
+    """指示書 002 §1 / §4: 推測禁止を Directive に正式に入れる。
+
+    実 AI で回したとき、Codex は仕様の穴を QUESTION にせず自分で埋めて DONE を返した。
+    Adapter の不具合ではなく、指示が縛っていなかったことが原因だった。
+    """
+
+    def test_every_judgement_phase_forbids_guessing(self) -> None:
+        for phase, directive in PHASE_DIRECTIVES.items():
+            assert NO_GUESSING_RULE in directive, phase
+
+    def test_the_rule_names_question_as_the_alternative(self) -> None:
+        assert "return QUESTION instead of deciding it yourself" in NO_GUESSING_RULE
+
+    def test_a_question_must_say_what_it_checked(self) -> None:
+        """§1: 何が不明か、どの成果物を確認したか、なぜ判断不能か。"""
+        assert "what is undecided" in NO_GUESSING_RULE
+        assert "which documents you checked" in NO_GUESSING_RULE
+        assert "cannot settle it" in NO_GUESSING_RULE
+
+    def test_it_does_not_ask_for_more_questions_in_general(self) -> None:
+        """§1: 目的は質問を増やすことではない。表記揺れまで聞かせない。"""
+        assert "not an instruction to ask more often" in NO_GUESSING_RULE
+        assert "do not raise those as questions" in NO_GUESSING_RULE
+
+    def test_reviewers_may_not_pass_on_their_own_interpretation(self) -> None:
+        for phase in (Phase.REVIEW_LIGHT, Phase.REVIEW_DEEP):
+            assert REVIEWER_RULE in PHASE_DIRECTIVES[phase]
+        assert REVIEWER_RULE not in PHASE_DIRECTIVES[Phase.GENERATE]
+
+    def test_the_rule_lives_in_one_place_not_per_adapter(self) -> None:
+        """§4: Adapter ごとに固定文を書き分けない。"""
+        codex = Path("src/agent_controller/cli_worker.py").read_text(encoding="utf-8")
+        assert "Do not fill in a judgement" not in codex
+
+    def test_the_rule_actually_reaches_the_worker(self) -> None:
+        """§8: Directive が実際に Worker へ渡っているかを確かめる。"""
+        runner = fake_runner('{"event": "DONE"}')
+        worker = CodexCliWorker(runner=runner)
+        handlers = phase_handlers_from_worker(
+            worker, workspace=".", input_artifacts=["SPEC.md"], output_artifact="USECASE.md"
+        )
+        handlers[Phase.GENERATE](
+            RunState(project_id="p", run_id="r", current_state=State.DESIGN)
+        )
+
+        _argv, _cwd, _timeout, prompt = runner.calls[0]
+        assert NO_GUESSING_RULE in prompt
+
+    def test_question_is_an_allowed_event_everywhere_it_is_demanded(self) -> None:
+        """§8: 構造化出力スキーマが QUESTION を許しているか。"""
+        for phase in (Phase.GENERATE, Phase.REVIEW_LIGHT, Phase.REVIEW_DEEP, Phase.FIX):
+            assert Event.QUESTION in allowed_stage_events(phase), phase
