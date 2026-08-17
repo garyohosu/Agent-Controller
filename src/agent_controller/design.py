@@ -48,8 +48,10 @@ from agent_controller.models import (
     Phase,
     RunState,
     State,
+    TaskType,
 )
 from agent_controller.qanda import QandaFile
+from agent_controller.router import FAST_PATH_STAGES
 from agent_controller.transition_log import TransitionLogger
 
 STAGE_OUTPUTS: dict[DocumentStage, str] = {
@@ -92,6 +94,66 @@ def default_design_stages(include_ui: bool = False) -> list[DocumentStageConfig]
         for stage in DOCUMENT_STAGE_ORDER
         if include_ui or stage != DocumentStage.UI
     ]
+
+
+def design_stages_for_task_type(
+    task_type: TaskType, include_ui: bool = False
+) -> list[DocumentStageConfig]:
+    """Task Complexity Router が選んだ TaskType から DESIGN の Fast Path を組む
+    （指示書 018 §3.2）。
+
+    TEST / REVIEW / CompleteGate はここでは削らない。削るのはこの DESIGN
+    Progressive Refinement の中の文書工程だけ（§3.3 の禁止事項）。
+    """
+    included = set(FAST_PATH_STAGES[task_type])
+    if include_ui:
+        included.add(DocumentStage.UI)
+    return [
+        DocumentStageConfig(
+            name=stage,
+            inputs=STAGE_INPUTS[stage],
+            output=STAGE_OUTPUTS[stage],
+            review_level=DEFAULT_REVIEW_LEVELS[stage],
+        )
+        for stage in DOCUMENT_STAGE_ORDER
+        if stage in included
+    ]
+
+
+def mark_fast_path_skips(
+    logger: TransitionLogger,
+    run: RunState,
+    task_type: TaskType,
+    include_ui: bool = False,
+) -> None:
+    """Fast Path が省く工程を、その run で初めて DESIGN に入るときだけ
+    VALID / NOT_REQUIRED にする。
+
+    CompleteGate は「その ArtifactKind が VALID か」しか見ないので、既存の
+    README の NOT_REQUIRED と同じ形にすれば CompleteGate 側の変更は要らない。
+    既に artifact 行がある工程には触れない。ここが 1 回しか書かれないことで、
+    後から upstream 手戻りがその工程の updated_at を巻き戻す心配が無くなる
+    （run_design / merge_impacts は常に呼び出し側が渡した stages だけを見る）。
+    """
+    included = set(FAST_PATH_STAGES[task_type])
+    if include_ui:
+        included.add(DocumentStage.UI)
+    existing = logger.store.artifacts(run.run_id)
+    for stage in DOCUMENT_STAGE_ORDER:
+        if stage in included:
+            continue
+        kind = artifact_kind_for(stage)
+        if kind in existing:
+            continue
+        logger.store.save_artifact(
+            ArtifactState(
+                run_id=run.run_id,
+                kind=kind,
+                status=ArtifactStatus.VALID,
+                path=STAGE_OUTPUTS[stage],
+                reason=f"NOT_REQUIRED (fast_path={task_type.value})",
+            )
+        )
 
 
 def _artifact_status(

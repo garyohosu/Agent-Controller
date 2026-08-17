@@ -26,6 +26,7 @@ from agent_controller.models import (
     ContractStatus,
     Question,
     QuestionStatus,
+    RecoveryAttempt,
     RunInput,
     RunState,
     Transition,
@@ -36,6 +37,7 @@ from agent_controller.models import (
 _RUN_COLUMNS = (
     "run_id",
     "project_id",
+    "task_type",
     "current_state",
     "substate",
     "phase",
@@ -97,6 +99,8 @@ _QUESTION_COLUMNS = (
     "recommended_human_action",
     "affected_artifacts",
     "requires_human_confirmation_before_complete",
+    "policy_rule",
+    "policy_scope",
     "question",
     "context",
     "answer",
@@ -412,6 +416,41 @@ class Store:
             )
             for row in rows
         }
+
+    # -- recovery log (指示書 018 §4.3) --------------------------------------
+
+    def save_recovery_attempt(self, attempt: RecoveryAttempt) -> int:
+        """Auto-Recovery が試した 1 回を追記する。Decision Log と同じく正本は SQLite。"""
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO recovery_attempts
+                    (run_id, timestamp, error_code, failed_worker, failed_role,
+                     capability_mismatch, fallback_worker, attempt_number,
+                     final_outcome, reason)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    attempt.run_id, attempt.timestamp.isoformat(), attempt.error_code,
+                    _encode(attempt.failed_worker), _encode(attempt.failed_role),
+                    int(attempt.capability_mismatch), _encode(attempt.fallback_worker),
+                    attempt.attempt_number, attempt.final_outcome, attempt.reason,
+                ),
+            )
+        return int(cursor.lastrowid)
+
+    def recovery_attempts(self, run_id: str) -> list[RecoveryAttempt]:
+        rows = self._conn.execute(
+            "SELECT * FROM recovery_attempts WHERE run_id = ? ORDER BY id", (run_id,)
+        ).fetchall()
+        result = []
+        for row in rows:
+            data = {key: row[key] for key in row.keys() if key != "id"}
+            data["capability_mismatch"] = bool(data["capability_mismatch"])
+            result.append(RecoveryAttempt.model_validate(data))
+        return result
+
+    # -- artifacts -------------------------------------------------------------
 
     def artifacts(self, run_id: str) -> dict[ArtifactKind, ArtifactState]:
         rows = self._conn.execute(

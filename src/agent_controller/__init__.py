@@ -1,5 +1,12 @@
 """Agent Controller: deterministic state machine driving exchangeable AI workers."""
 
+from agent_controller.capability import (
+    DEFAULT_CAPABILITIES,
+    WorkerCapability,
+    capability_for,
+    classify_worker_error,
+    satisfies,
+)
 from agent_controller.cli_worker import AgyCliWorker, ClaudeCodeWorker, CodexCliWorker, GrokCliWorker
 from agent_controller.complete import (
     CompleteBlocker,
@@ -12,7 +19,9 @@ from agent_controller.acceptance import ensure_todo_contracts, verify_contract, 
 from agent_controller.design import (
     default_design_stages,
     design_artifact_statuses,
+    design_stages_for_task_type,
     invalidate_from,
+    mark_fast_path_skips,
     run_design,
 )
 from agent_controller.document_stage import (
@@ -60,15 +69,18 @@ from agent_controller.models import (
     Phase,
     Question,
     QuestionStatus,
+    RecoveryAttempt,
     ReviewLevel,
     Role,
     RunState,
     RunStatus,
     State,
+    TaskType,
     Transition,
     Worker,
 )
 from agent_controller.qanda import QandaFile, render_qanda
+from agent_controller.router import classify_task_type, skipped_stages_for_task_type, stages_for_task_type
 from agent_controller.transitions import (
     RESUME,
     TRANSITIONS,
@@ -100,6 +112,18 @@ __all__ = [
     "ContractStatus",
     "ClaudeCodeWorker",
     "AgyCliWorker",
+    "DEFAULT_CAPABILITIES",
+    "WorkerCapability",
+    "capability_for",
+    "classify_worker_error",
+    "satisfies",
+    "RecoveryAttempt",
+    "TaskType",
+    "classify_task_type",
+    "stages_for_task_type",
+    "skipped_stages_for_task_type",
+    "design_stages_for_task_type",
+    "mark_fast_path_skips",
     "CompleteBlocker",
     "CompleteBlockerCode",
     "CompleteCheckResult",

@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from agent_controller.models import Event, RunInput, RunState, State
+from agent_controller.models import Event, RunInput, RunState, State, TaskType
 from agent_controller.store import Store
 from agent_controller.transition_log import TransitionLogger
 
@@ -63,7 +63,16 @@ def start_run(
     run_id: str,
     workspace: str | Path,
     request: str,
+    task_type: TaskType | None = None,
 ) -> tuple[RunState, RunInput]:
+    """Start a run.
+
+    task_type is deliberately opt-in and defaults to None (full Progressive
+    Refinement, unchanged from before instruction 018). Automatic
+    classification via router.classify_task_type() is applied by the public
+    CLI entry point, not here, so existing library callers keep their exact
+    prior behaviour.
+    """
     if not run_id.strip():
         raise RunStartError("run ID must not be empty")
     if not request.strip():
@@ -72,7 +81,7 @@ def start_run(
     if store.load_run(run_id) is not None:
         raise RunStartError(f"run already exists: {run_id}")
 
-    run = RunState(project_id=root.name, run_id=run_id)
+    run = RunState(project_id=root.name, run_id=run_id, task_type=task_type)
     run_input = RunInput(
         run_id=run_id,
         workspace=str(root),

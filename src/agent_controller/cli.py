@@ -15,8 +15,9 @@ from agent_controller.human import AnswerRejected, answer_batch, answer_question
 from agent_controller.complete import CompleteGate
 from agent_controller.lifecycle import RunStartError, start_run, validate_workspace
 from agent_controller.git_checkpoint import GitCheckpointError, GitCheckpointManager
-from agent_controller.models import DocumentStage, QuestionStatus
+from agent_controller.models import DocumentStage, QuestionStatus, TaskType
 from agent_controller.qanda import render_qanda
+from agent_controller.router import classify_task_type
 from agent_controller.store import Store
 from agent_controller.transition_log import TransitionLogger
 
@@ -55,6 +56,10 @@ def cmd_init(args: argparse.Namespace) -> int:
         validate_workspace(args.workspace)
         if not args.request.strip():
             raise RunStartError("request must not be empty")
+        # 明示 --task-type が無ければ、公開 CLI の入口としてここで自動分類する
+        # （指示書 018 §3）。ライブラリの start_run() 自体は None のまま
+        # （既存呼び出し側の挙動を変えない）。
+        task_type = TaskType(args.task_type) if getattr(args, "task_type", None) else classify_task_type(args.request)
         with _store(args) as store:
             run, run_input = start_run(
                 store,
@@ -62,10 +67,12 @@ def cmd_init(args: argparse.Namespace) -> int:
                 run_id=args.run,
                 workspace=args.workspace,
                 request=args.request,
+                task_type=task_type,
             )
         print(f"created {run.run_id}")
         print(f"  workspace: {run_input.workspace}")
         print(f"  position: {run.current_state.value}")
+        print(f"  task_type: {run.task_type.value if run.task_type else '-'}")
         return 0
     except (OSError, RunStartError) as error:
         print(f"rejected: {error}", file=sys.stderr)
@@ -168,6 +175,48 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_recovery(args: argparse.Namespace) -> int:
+    """Auto-Recovery の試行履歴（指示書 018 §4.3）を表示する。"""
+    args.run = _require_run(args)
+    with _store(args) as store:
+        attempts = store.recovery_attempts(args.run)
+        if not attempts:
+            print(f"no recovery attempts in run {args.run}")
+            return 0
+        for item in attempts:
+            mismatch = " capability_mismatch" if item.capability_mismatch else ""
+            fallback = f" -> {item.fallback_worker.value}" if item.fallback_worker else " -> (none)"
+            print(
+                f"#{item.attempt_number} {item.error_code:<24} "
+                f"{item.failed_worker.value if item.failed_worker else '-':<12}"
+                f"{fallback}{mismatch}  [{item.final_outcome}]"
+            )
+            if item.reason:
+                print(f"    {item.reason}")
+    return 0
+
+
+def cmd_decisions(args: argparse.Namespace) -> int:
+    """Default Decision Policy による自動決定の Decision Log（指示書 018 §6.3）。"""
+    args.run = _require_run(args)
+    with _store(args) as store:
+        decided = [
+            item for item in store.questions(args.run)
+            if item.classification or item.policy_rule
+        ]
+        if not decided:
+            print(f"no policy decisions recorded in run {args.run}")
+            return 0
+        for item in decided:
+            print(f"{item.question_id}  {item.status.value:<12} classification={item.classification or '-'}")
+            print(f"    policy_rule={item.policy_rule or '-'}  policy_scope={item.policy_scope or '-'}")
+            print(f"    risk={item.risk or '-'}  reversible={item.reversible}")
+            print(f"    question: {item.question}")
+            if item.provisional_answer:
+                print(f"    provisional_answer: {item.provisional_answer}")
+    return 0
+
+
 def cmd_contracts(args: argparse.Namespace) -> int:
     args.run = _require_run(args)
     with _store(args) as store:
@@ -196,6 +245,12 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--run", dest="run", default=argparse.SUPPRESS, help="new run id")
     init.add_argument("--workspace", dest="workspace", default=argparse.SUPPRESS, help="Git workspace")
     init.add_argument("--request", required=True, help="formal initial request")
+    init.add_argument(
+        "--task-type",
+        choices=[item.value for item in TaskType],
+        default=argparse.SUPPRESS,
+        help="Task Complexity Router classification; auto-classified from --request if omitted",
+    )
     init.set_defaults(func=cmd_init)
 
     answer = sub.add_parser("answer", help="answer a question that is waiting on a human")
@@ -224,6 +279,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     contracts = sub.add_parser("contracts", help="list acceptance contracts")
     contracts.set_defaults(func=cmd_contracts)
+
+    recovery = sub.add_parser("recovery", help="list Auto-Recovery attempts")
+    recovery.set_defaults(func=cmd_recovery)
+
+    decisions = sub.add_parser("decisions", help="list Default Decision Policy decisions")
+    decisions.set_defaults(func=cmd_decisions)
 
     return parser
 

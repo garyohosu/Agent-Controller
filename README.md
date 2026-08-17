@@ -174,6 +174,8 @@ backward-compatible.
 - `instructions/instruction-2026-08-09-001.md` / `-002.md` — 人間回答と実 Q&A の指示書
 - `instructions/result-2026-08-09-008.md` — 実施結果（人間回答経路と実 AI Q&A）
 - `instructions/result-2026-08-09-009.md` — 実施結果（推測禁止 Directive と指紋修正）
+- `instructions/instruction-2026-08-17-018.md` — フィールドテスト由来の自律性改善指示書
+- `instructions/result-2026-08-17-025.md` — 実施結果（Task Router / Auto-Recovery / Default Decision Policy）
 -
 ## 2026-08-09 最終安定化（instruction-012）
 
@@ -188,3 +190,36 @@ Q&A回答後の再Reviewに回答を構造化して渡し、`ANSWER_ONLY` / `IMP
 ## 2026-08-09 instruction-014 Claude診断結果
 
 Claude CLI 2.1.226の単体起動・stdin PIPE・JSON出力は成功しますが、実Reviewer payloadではtimeoutが残りました。`--tools Read,Glob,Grep`を除去し、plan modeと短縮Reviewer directiveを導入した結果、短縮payloadは3回連続PASS、Main GraphではClaude timeout後のCodex fallbackでCOMPLETEを確認しています。Claude runtime側の長いpayload不安定性は既知制限として `instructions/result-2026-08-09-021.md` に記録しています。
+-
+## 2026-08-17 instruction-018: フィールドテスト由来の自律性改善
+
+`needs-detector`（NEEDS-CPF-GATE-002）を実プロジェクトとして流したフィールドテストで、
+Controller は安全に止まる一方、軽微な判断でも人間を呼びすぎることが分かった。今回は
+「通常は自律的に進み、危険・不可逆な判断だけ人間を呼ぶ」方向へ、既存の State Machine /
+SQLite 正本 / CompleteGate / Q&A / Git 安全機構を変えずに 3 機能を足した。
+
+- **Task Complexity Router / Design Fast Path**（`router.py` / `design.py`）— `TaskType`
+  （NEW_PRODUCT / NEW_FEATURE / SMALL_FEATURE / BUG_FIX / REFACTOR / DOC_ONLY）に応じて
+  DESIGN の文書工程を絞る。省いた工程は README の `NOT_REQUIRED` と同じ形で
+  `ArtifactStatus.VALID` にし、CompleteGate 側は変更していない。`task_type` が未分類
+  （既定値 `None`）の run は今まで通りフル経路のまま。TEST / REVIEW / CompleteGate は
+  どの Fast Path でも省略しない。
+- **Worker Capability Profile / Auto-Recovery**（`capability.py`、`worker.py` の
+  `phase_handlers_from_worker`）— GENERATE / FIX のような書き込み工程は `can_write=True`
+  の候補だけに絞り、能力不足の候補は一度も呼ばずに次点へ回す。`WRITE_PERMISSION_DENIED` /
+  `READ_PERMISSION_DENIED` / `TIMEOUT` は reason 文字列から機械的に分類し、
+  `recovery_attempts` テーブル（SQLite、`agent-controller recovery --run RUN` で参照）へ
+  試行ごとに記録する。dirty workspace は今まで通り Worker を一切呼ばずに拒否し、
+  `git clean` / `reset --hard` / `stash` を自動実行しない（回帰テストで固定）。
+- **Default Decision Policy / Decision Log / 同一Run再利用**（`worker.py` の
+  `DEFAULT_DECISION_POLICY`、`qanda.py`）— 既存 API 互換・最小変更・スコープ非拡大などの
+  既定方針を Director/QANDA の directive に明文化した。実装の過程で、この経路の
+  `decision_class` / `policy_rule` / `policy_scope` が `document_stage.StageResult`
+  に無く pydantic の `extra="ignore"` で黙って落ちていたため、LOW_RISK_REVERSIBLE の
+  自動決定が実 Worker 経由では機能していなかった潜在バグを発見し修正した。自動決定は
+  `questions` テーブルへ `policy_rule` 付きで残り、`agent-controller decisions --run RUN`
+  で参照できる。Worker が同じ `policy_scope` を自己申告すれば、同一 run 内の 2 回目以降は
+  Worker を呼ばずに既存の決定を再利用する（自己申告が無い質問には触れない）。
+
+`uv run pytest` は `314 passed, 4 skipped`（新規 34 件を含む）。詳細と needs-detector
+フィールド回帰の結果は `instructions/result-2026-08-17-025.md` を参照。

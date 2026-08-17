@@ -238,6 +238,22 @@ class RunStatus(StrEnum):
     ABORTED = "ABORTED"
 
 
+class TaskType(StrEnum):
+    """Task Complexity Router が扱う分類（指示書 2026-08-17-018 §3）。
+
+    None（未分類）は「従来通りフル Progressive Refinement」を意味する。
+    既存 run / 既存呼び出し側の挙動を変えないための既定値であって、
+    「不明」を表す値ではない。不明時の保守的既定は NEW_PRODUCT に倒す。
+    """
+
+    NEW_PRODUCT = "NEW_PRODUCT"
+    NEW_FEATURE = "NEW_FEATURE"
+    SMALL_FEATURE = "SMALL_FEATURE"
+    BUG_FIX = "BUG_FIX"
+    REFACTOR = "REFACTOR"
+    DOC_ONLY = "DOC_ONLY"
+
+
 class RunState(BaseModel):
     """run 1 件の現在位置。LangGraph の graph state であり、SQLite の runs 行でもある。
 
@@ -247,6 +263,9 @@ class RunState(BaseModel):
 
     project_id: str
     run_id: str
+
+    task_type: TaskType | None = None
+    """Task Complexity Router の分類結果（指示書 018 §3）。None は従来のフル経路。"""
 
     current_state: State = State.IDLE
     substate: DocumentStage | None = None
@@ -468,6 +487,21 @@ class Question(BaseModel):
     affected_artifacts: list[str] = Field(default_factory=list)
     requires_human_confirmation_before_complete: bool = False
 
+    policy_rule: str | None = None
+    """Default Decision Policy（指示書 018 §6）のどの原則で決定したか。
+
+    人間へ上げずに自動決定した場合、なぜそれで良いのかを Decision Log に残すための
+    構造化タグ。Worker が申告しなければ None のままで、既存の挙動は変わらない。
+    """
+
+    policy_scope: str | None = None
+    """§7 の「同一Runの回答再利用」で使う決定範囲のタグ。
+
+    同じ run の中で同じ policy_scope を持つ後続の質問は、Worker がこのタグを
+    自己申告した場合に限り、既存の回答を再利用できる。Controller が自由文の
+    類似度から推測することはしない。
+    """
+
     question: str
     context: str | None = None
     """なぜ答えられないのか（§9 の Reason / Context）。"""
@@ -511,3 +545,33 @@ class ArtifactState(BaseModel):
     path: str | None = None
     reason: str | None = None
     updated_at: datetime = Field(default_factory=utcnow)
+
+
+class RecoveryAttempt(BaseModel):
+    """Auto-Recovery が試した 1 回の記録（指示書 018 §4.3）。
+
+    「何が起き、何を試し、どうなったか」を自由文の reason だけに頼らず
+    機械的に追える形で残す。1 phase 呼び出しで複数候補を試したら、
+    候補ごとに 1 行。
+    """
+
+    run_id: str
+    timestamp: datetime = Field(default_factory=utcnow)
+
+    error_code: str
+    """WRITE_PERMISSION_DENIED / READ_PERMISSION_DENIED / TIMEOUT / RESOURCE_LIMIT など。"""
+
+    failed_worker: Worker | None = None
+    failed_role: Role | None = None
+
+    capability_mismatch: bool = False
+    """候補が能力不足（can_write=False など）で最初から呼ばれなかった場合に立てる。"""
+
+    fallback_worker: Worker | None = None
+    """次に試した（または試そうとした）Worker。無ければ候補が尽きたことを表す。"""
+
+    attempt_number: int = 1
+    final_outcome: str = "PENDING"
+    """FALLBACK_SUCCEEDED / ALL_CANDIDATES_FAILED / HUMAN_REQUIRED など。"""
+
+    reason: str | None = None

@@ -170,6 +170,20 @@ class StageResult(BaseModel):
     answer: str | None = None
     """QANDA で回答したとき、その答え（§9）。無ければ reason で代用する。"""
 
+    decision_class: str | None = None
+    provisional_answer: str | None = None
+    risk: str | None = None
+    reversible: bool | None = None
+    affected_artifacts: list[str] = Field(default_factory=list)
+    blocking_scope: str | None = None
+    recommended_human_action: str | None = None
+
+    policy_rule: str | None = None
+    """指示書 018 §6 の Default Decision Policy のどの原則を適用したか。"""
+
+    policy_scope: str | None = None
+    """指示書 018 §7 の同一Run再利用のための決定範囲タグ。"""
+
 
 PhaseHandler = Callable[[RunState], StageResult]
 
@@ -500,6 +514,7 @@ def _update_questions(
             asked_worker=result.worker,
             related_artifacts=[*config.inputs, config.output],
             return_phase=phase,
+            policy_scope=getattr(result, "policy_scope", None),
         )
         return
 
@@ -521,6 +536,8 @@ def _update_questions(
             affected_artifacts=getattr(result, "affected_artifacts", []),
             blocking_scope=getattr(result, "blocking_scope", None),
             recommended_human_action=getattr(result, "recommended_human_action", None),
+            policy_rule=getattr(result, "policy_rule", None),
+            policy_scope=getattr(result, "policy_scope", None) or question.policy_scope,
         )
     elif result.event == Event.CANNOT_ANSWER:
         question.classification = decision_class or "UNKNOWN"

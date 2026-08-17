@@ -21,7 +21,12 @@ from pydantic import BaseModel
 from agent_controller.guards import LoopGuard, apply_guard
 from agent_controller.complete import CompleteGate
 from agent_controller.acceptance import ensure_todo_contracts, verify_contracts
-from agent_controller.design import default_design_stages, run_design
+from agent_controller.design import (
+    default_design_stages,
+    design_stages_for_task_type,
+    mark_fast_path_skips,
+    run_design,
+)
 from agent_controller.git_checkpoint import GitCheckpointManager
 from agent_controller.models import (
     ArtifactKind,
@@ -78,6 +83,8 @@ class StageResult(BaseModel):
     blocking_scope: str | None = None
     recommended_human_action: str | None = None
     requires_human_confirmation_before_complete: bool = False
+    policy_rule: str | None = None
+    policy_scope: str | None = None
 
 
 StageHandler = Callable[[RunState], StageResult]
@@ -149,10 +156,18 @@ def wired_handlers(
     review_directives: dict[str, str] = {}
 
     def design_handler(run: RunState) -> StageResult:
+        # 明示的な design_stages（呼び出し側の上書き）が無く、かつこの run が
+        # Task Complexity Router で分類済みなら Fast Path を使う（指示書 018 §3）。
+        # task_type が None の run は従来通りフル Progressive Refinement のまま。
+        stages = design_stages
+        if stages is None and run.task_type is not None:
+            mark_fast_path_skips(logger, run, run.task_type)
+            stages = design_stages_for_task_type(run.task_type)
+        stages = stages if stages is not None else default_design_stages()
         updated = run_design(
             run,
             logger,
-            stages=design_stages or default_design_stages(),
+            stages=stages,
             handlers=design_phase_handlers,
             workspace=workspace,
             qanda=qanda,
@@ -189,6 +204,7 @@ def wired_handlers(
                     context=result.reason,
                     asked_role=result.role,
                     asked_worker=result.worker,
+                    policy_scope=getattr(result, "policy_scope", None),
                 )
                 # A QUESTION from IMPLEMENT is sent through the same Director
                 # classification contract before the main graph decides whether
@@ -216,6 +232,8 @@ def wired_handlers(
                         affected_artifacts=getattr(qanda_result, "affected_artifacts", []),
                         blocking_scope=getattr(qanda_result, "blocking_scope", None),
                         recommended_human_action=getattr(qanda_result, "recommended_human_action", None),
+                        policy_rule=getattr(qanda_result, "policy_rule", None),
+                        policy_scope=getattr(qanda_result, "policy_scope", None) or question.policy_scope,
                     )
                     result = handlers[Phase.GENERATE](run)
                 elif qanda_result.event in (Event.DONE, Event.LOCAL_FIX):
@@ -307,6 +325,7 @@ def wired_handlers(
                     context=result.reason,
                     asked_role=result.role,
                     asked_worker=result.worker,
+                    policy_scope=getattr(result, "policy_scope", None),
                 )
                 director = phase_handlers_from_worker(
                     reviewer,
@@ -331,6 +350,8 @@ def wired_handlers(
                         affected_artifacts=getattr(director, "affected_artifacts", []),
                         blocking_scope=getattr(director, "blocking_scope", None),
                         recommended_human_action=getattr(director, "recommended_human_action", None),
+                        policy_rule=getattr(director, "policy_rule", None),
+                        policy_scope=getattr(director, "policy_scope", None) or question.policy_scope,
                     )
                     action = action or "ANSWER_ONLY"
                     result = handlers[Phase.REVIEW_LIGHT](run)

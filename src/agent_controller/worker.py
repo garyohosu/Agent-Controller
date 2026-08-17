@@ -29,12 +29,21 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from agent_controller.capability import (
+    WorkerCapability,
+    capability_for,
+    classify_worker_error,
+    required_capability_flag,
+    satisfies,
+    shorten_directive,
+)
 from agent_controller.document_stage import PhaseHandler, StageResult, allowed_stage_events
 from agent_controller.models import (
     DocumentStage,
     Event,
     Phase,
     Question,
+    RecoveryAttempt,
     Role,
     RunState,
     State,
@@ -85,6 +94,21 @@ class WorkerOutput(BaseModel):
 
     upstream_target: str | None = None
     files_changed: list[str] = Field(default_factory=list)
+
+    decision_class: str | None = None
+    provisional_answer: str | None = None
+    risk: str | None = None
+    reversible: bool | None = None
+    affected_artifacts: list[str] = Field(default_factory=list)
+    blocking_scope: str | None = None
+    recommended_human_action: str | None = None
+    requires_human_confirmation_before_complete: bool = False
+
+    policy_rule: str | None = None
+    """§6 の Default Decision Policy のどの原則を適用したか（自動決定した場合のみ）。"""
+
+    policy_scope: str | None = None
+    """§7 の同一Run再利用のための決定範囲タグ。省略すれば再利用は起きない。"""
 
 
 WORKER_OUTPUT_SCHEMA: dict[str, Any] = WorkerOutput.model_json_schema()
@@ -160,6 +184,8 @@ class WorkerResult(BaseModel):
     blocking_scope: str | None = None
     recommended_human_action: str | None = None
     requires_human_confirmation_before_complete: bool = False
+    policy_rule: str | None = None
+    policy_scope: str | None = None
 
 
 class WorkerAdapter(Protocol):
@@ -291,6 +317,8 @@ def stage_result_from(result: WorkerResult, worker: Worker, role: Role) -> Stage
         blocking_scope=result.blocking_scope,
         recommended_human_action=result.recommended_human_action,
         requires_human_confirmation_before_complete=result.requires_human_confirmation_before_complete,
+        policy_rule=result.policy_rule,
+        policy_scope=result.policy_scope,
     )
 
 
@@ -354,6 +382,31 @@ REVIEWER_RULE = (
 )
 """Reviewer への追加制約（指示書 002 §1）。"""
 
+DEFAULT_DECISION_POLICY = (
+    "Default Decision Policy - apply these before escalating to a human "
+    "(source: instruction 2026-08-17-018 SS6.1):\n"
+    "1. Prefer existing API / data compatibility over introducing a new shape.\n"
+    "2. Prefer the smallest change that satisfies the requirement.\n"
+    "3. Do not expand the requested scope; do not add functionality nobody asked for.\n"
+    "4. When genuinely unsure, lean toward the conservative choice.\n"
+    "5. A reversible, low-risk choice should be decided and recorded, not escalated.\n"
+    "6. Keep existing tests and existing behaviour passing.\n"
+    "7. Prefer fitting an existing public contract over adding a new one.\n"
+    "8. If a human already answered a same-scope question earlier in this run, "
+    "reuse that answer instead of asking again. If you are about to raise a "
+    "QUESTION that is the same kind of decision as one already answered earlier "
+    "in this run (e.g. another instance of an API-shape choice), set "
+    "`policy_scope` on the QUESTION itself to the same tag so the controller can "
+    "reuse the earlier decision without calling a Worker again. Only do this when "
+    "it is genuinely the same category of decision; do not force unrelated "
+    "questions to share a scope just to avoid asking.\n"
+    "None of this weakens QUESTION / CANNOT_ANSWER for the cases that genuinely need "
+    "a human: breaking changes, irreversible operations, deliberate destruction of an "
+    "existing public API, data loss, security/privacy judgement calls, spending money, "
+    "external release/deployment, or requirements that are actually contradictory."
+)
+"""指示書 018 §6 の既定意思決定原則。人間へ上げる範囲（§6.2）は狭めない。"""
+
 
 _PHASE_TASKS: dict[Phase, str] = {
     Phase.GENERATE: (
@@ -395,7 +448,14 @@ _PHASE_TASKS: dict[Phase, str] = {
         "For every successful QANDA answer, also return exactly one action: "
         "ANSWER_ONLY, IMPLEMENT_CHANGE_REQUIRED, ARTIFACT_CHANGE_REQUIRED, "
         "UPSTREAM_CHANGE_REQUIRED, or HUMAN_REQUIRED. "
-        "Cite the documents your answer rests on."
+        "Cite the documents your answer rests on. "
+        "When your decision applies one of the Default Decision Policy rules instead "
+        "of asking a human, set `policy_rule` to a short SCREAMING_SNAKE_CASE id for "
+        "the rule you used (e.g. EXISTING_API_COMPATIBILITY, MINIMAL_CHANGE, "
+        "NO_SCOPE_EXPANSION). If the same kind of decision could plausibly recur later "
+        "in this run, also set `policy_scope` to a short stable tag for that decision "
+        "category (e.g. API_SHAPE, EVIDENCE_GATE_COVERAGE) so the controller can reuse "
+        "this answer instead of asking again for the same kind of question."
     ),
 }
 
@@ -403,7 +463,7 @@ _REVIEW_PHASES_WITH_RULE = (Phase.REVIEW_LIGHT, Phase.REVIEW_DEEP)
 
 
 def _directive_for(phase: Phase) -> str:
-    parts = [_PHASE_TASKS[phase], "", NO_GUESSING_RULE]
+    parts = [_PHASE_TASKS[phase], "", NO_GUESSING_RULE, "", DEFAULT_DECISION_POLICY]
     if phase in _REVIEW_PHASES_WITH_RULE:
         parts += ["", REVIEWER_RULE]
     return "\n".join(parts)
@@ -451,11 +511,17 @@ def phase_handlers_from_worker(
     directives: dict[Phase, str] | None = None,
     qanda: QandaFile | None = None,
     git: GitCheckpointManager | None = None,
+    capabilities: dict[Worker, WorkerCapability] | None = None,
 ) -> dict[Phase, PhaseHandler]:
     """Worker を Document Stage の phase handler に変換する。
 
     workers に dict を渡すと Role ごとに別の Worker を使う（指示書 §13 の
     「Implementer と Reviewer は別 Worker」）。1 つだけ渡せば単独運転。
+
+    capabilities を渡すと、成果物を書く phase（GENERATE / FIX）の候補を
+    can_write=True の Worker だけに絞る（指示書 018 §5）。渡さなければ
+    DEFAULT_CAPABILITIES を使い、登録済み Worker は全能力 True のままなので
+    既存の呼び出し側の挙動は変わらない。
     """
     if isinstance(workers, WorkerRouter):
         router = workers
@@ -474,13 +540,24 @@ def phase_handlers_from_worker(
 
     def make(phase: Phase) -> PhaseHandler:
         role = PHASE_ROLES[phase]
-        candidates = router.candidates_for(role) if router else worker_map[role]
-        adapter = candidates[0] if candidates else None
+        all_candidates = router.candidates_for(role) if router else worker_map[role]
+        excluded = [
+            candidate for candidate in all_candidates
+            if not satisfies(capability_for(candidate.name, capabilities), phase)
+        ]
+        candidates = [candidate for candidate in all_candidates if candidate not in excluded]
+        adapter = candidates[0] if candidates else (all_candidates[0] if all_candidates else None)
         permitted = (
             allowed_events[phase]
             if allowed_events is not None and phase in allowed_events
             else sorted(allowed_stage_events(phase), key=lambda event: event.value)
         )
+        flag = required_capability_flag(phase)
+
+        def _log_recovery(run_id: str, **fields: Any) -> None:
+            if git is None or git.store is None:
+                return
+            git.store.save_recovery_attempt(RecoveryAttempt(run_id=run_id, **fields))
 
         def handler(run: RunState) -> StageResult:
             if git is not None:
@@ -494,12 +571,65 @@ def phase_handlers_from_worker(
                         reason=f"git checkpoint unavailable: {error}",
                     )
 
-            if not candidates:
-                return StageResult(
-                    event=Event.WORKER_ERROR,
-                    role=role,
-                    reason=f"no worker candidate is configured for role {role.value}",
+            if phase == Phase.QANDA and qanda is not None:
+                # 指示書 018 §7: 同一 run 内で同じ policy_scope の決定が既にあれば、
+                # Worker を一切呼ばずに再利用する。Worker が policy_scope を
+                # 自己申告していない質問には触れない（安全側のデフォルト）。
+                pending_question = qanda.oldest_open(run.run_id)
+                if pending_question is not None and pending_question.policy_scope:
+                    reused = qanda.reusable_decision(
+                        run.run_id, pending_question.policy_scope
+                    )
+                    if reused is not None and reused.question_id != pending_question.question_id:
+                        answer_text = reused.provisional_answer or reused.answer or "(reused)"
+                        qanda.provisional_decision(
+                            pending_question,
+                            answer_text,
+                            classification=reused.classification or "LOW_RISK_REVERSIBLE",
+                            risk=reused.risk,
+                            reversible=reused.reversible,
+                            affected_artifacts=reused.affected_artifacts,
+                            blocking_scope=reused.blocking_scope,
+                            recommended_human_action=reused.recommended_human_action,
+                            policy_rule=reused.policy_rule,
+                            policy_scope=reused.policy_scope,
+                        )
+                        return StageResult(
+                            event=Event.DONE,
+                            role=role,
+                            answer=answer_text,
+                            reason=(
+                                f"reused {reused.question_id}'s answer for "
+                                f"policy_scope={reused.policy_scope} (SS7)"
+                            ),
+                            decision_class=reused.classification,
+                            policy_rule=reused.policy_rule,
+                            policy_scope=reused.policy_scope,
+                        )
+
+            for skipped in excluded:
+                _log_recovery(
+                    run.run_id,
+                    error_code="CAPABILITY_MISMATCH",
+                    failed_worker=skipped.name,
+                    failed_role=role,
+                    capability_mismatch=True,
+                    fallback_worker=candidates[0].name if candidates else None,
+                    attempt_number=0,
+                    final_outcome="EXCLUDED_BEFORE_ATTEMPT",
+                    reason=f"{skipped.name.value} lacks {flag} for phase {phase.value}",
                 )
+
+            if not candidates:
+                reason = (
+                    f"no worker candidate is configured for role {role.value}"
+                    if not all_candidates
+                    else (
+                        f"no {flag}-capable worker candidate for phase {phase.value}; "
+                        f"excluded: {', '.join(c.name.value for c in excluded)}"
+                    )
+                )
+                return StageResult(event=Event.WORKER_ERROR, role=role, reason=reason)
 
             directive = directives[phase]
             documents = list(input_artifacts)
@@ -507,22 +637,17 @@ def phase_handlers_from_worker(
                 directive = qanda_directive(directive, qanda.oldest_open(run.run_id))
                 documents = [*documents, QANDA_FILENAME]
 
-            request = build_request(
-                run,
-                phase,
-                role,
-                workspace,
-                documents,
-                output_artifact,
-                directive,
-                permitted,
-                expected_output_schema=WORKER_OUTPUT_SCHEMA,
-            )
             result = None
             selected = candidates[0]
             failures: list[str] = []
+            recovery_rows: list[dict[str, Any]] = []
+            current_directive = directive
             for index, candidate in enumerate(candidates):
                 selected = candidate
+                request = build_request(
+                    run, phase, role, workspace, documents, output_artifact,
+                    current_directive, permitted, expected_output_schema=WORKER_OUTPUT_SCHEMA,
+                )
                 invocation_started = time.perf_counter()
                 result = candidate.run(request)
                 diagnostic = dict(result.diagnostic)
@@ -546,6 +671,8 @@ def phase_handlers_from_worker(
                     summary = diagnostic_summary(result)
                     if summary:
                         result.reason = f"{result.reason or result.event.value}; {summary}"
+                if result.event == Event.WORKER_ERROR and not result.finding_code:
+                    result.finding_code = classify_worker_error(result.reason, result.raw_output)
                 problem = validate_worker_result(result, request)
                 if problem is not None:
                     result.event = Event.WORKER_ERROR
@@ -553,6 +680,18 @@ def phase_handlers_from_worker(
                 if result.event not in (Event.WORKER_ERROR, Event.WORKER_RESOURCE_LIMIT):
                     break
                 failures.append(f"{candidate.name.value}: {result.reason or result.event.value}")
+                error_code = result.finding_code or result.event.value
+                next_candidate = candidates[index + 1] if index + 1 < len(candidates) else None
+                recovery_rows.append(dict(
+                    error_code=error_code, failed_worker=candidate.name, failed_role=role,
+                    fallback_worker=next_candidate.name if next_candidate else None,
+                    attempt_number=index + 1,
+                    reason=result.reason,
+                ))
+                if error_code == "TIMEOUT":
+                    # §4.2 TIMEOUT: 次善は短縮版の指示。専用の短縮契約が無い工程でも
+                    # 常に使える既定の縮め方をここで当てる。
+                    current_directive = shorten_directive(directive)
                 if git is not None:
                     try:
                         actual = git.verified_files_changed(result.files_changed)
@@ -572,6 +711,11 @@ def phase_handlers_from_worker(
                     continue
                 break
             assert result is not None
+            if recovery_rows:
+                succeeded = result.event not in (Event.WORKER_ERROR, Event.WORKER_RESOURCE_LIMIT)
+                final_outcome = "FALLBACK_SUCCEEDED" if succeeded else "ALL_CANDIDATES_FAILED"
+                for row in recovery_rows:
+                    _log_recovery(run.run_id, final_outcome=final_outcome, **row)
             if len(failures) > 1:
                 result.reason = f"fallback attempts: {'; '.join(failures)}; {result.reason or result.event.value}"
             if git is not None and result.event not in (

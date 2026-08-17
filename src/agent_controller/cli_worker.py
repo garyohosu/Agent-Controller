@@ -285,6 +285,8 @@ def result_from_output(text: str, raw: str, *, classify_resource: bool = True) -
         requires_human_confirmation_before_complete=bool(
             payload.get("requires_human_confirmation_before_complete", False)
         ),
+        policy_rule=field("policy_rule"),
+        policy_scope=field("policy_scope"),
         raw_output=raw,
     )
 

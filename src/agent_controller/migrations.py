@@ -191,12 +191,36 @@ _V5_STATEMENTS = [
     "CREATE INDEX idx_acceptance_contracts_run ON acceptance_contracts (run_id, required, status)",
 ]
 
+_V6_STATEMENTS = [
+    "ALTER TABLE runs ADD COLUMN task_type TEXT",
+    "ALTER TABLE questions ADD COLUMN policy_rule TEXT",
+    "ALTER TABLE questions ADD COLUMN policy_scope TEXT",
+    """
+    CREATE TABLE recovery_attempts (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id              TEXT NOT NULL,
+        timestamp           TEXT NOT NULL,
+        error_code          TEXT NOT NULL,
+        failed_worker       TEXT,
+        failed_role         TEXT,
+        capability_mismatch INTEGER NOT NULL DEFAULT 0,
+        fallback_worker     TEXT,
+        attempt_number      INTEGER NOT NULL DEFAULT 1,
+        final_outcome       TEXT NOT NULL DEFAULT 'PENDING',
+        reason              TEXT,
+        FOREIGN KEY (run_id) REFERENCES runs (run_id)
+    )
+    """,
+    "CREATE INDEX idx_recovery_attempts_run ON recovery_attempts (run_id, id)",
+]
+
 MIGRATIONS: list[Migration] = [
     Migration(version=1, name="baseline", statements=_V1_STATEMENTS),
     Migration(version=2, name="questions", statements=_V2_STATEMENTS),
     Migration(version=3, name="question_decision_metadata", statements=_V3_STATEMENTS),
     Migration(version=4, name="run_inputs", statements=_V4_STATEMENTS),
     Migration(version=5, name="acceptance_contracts", statements=_V5_STATEMENTS),
+    Migration(version=6, name="task_router_and_recovery_log", statements=_V6_STATEMENTS),
 ]
 
 LATEST_VERSION = max(migration.version for migration in MIGRATIONS)

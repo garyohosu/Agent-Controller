@@ -341,6 +341,18 @@ class TestProcessFailures:
         result = worker.run(make_request())
         assert result.event == Event.WORKER_RESOURCE_LIMIT
 
+    def test_claude_code_rate_limit_observation_is_resource_limit(self) -> None:
+        worker = ClaudeCodeWorker(
+            runner=fake_runner(
+                exit_code=1,
+                stderr="Claude Code rate limit reached after 2m11s",
+            )
+        )
+        result = worker.run(make_request())
+        assert result.event == Event.WORKER_RESOURCE_LIMIT
+        assert result.reason == "CLAUDE_CODE hit a usage limit"
+        assert "rate limit" in result.diagnostic["stderr_tail"].lower()
+
     def test_timeout_is_a_worker_error(self) -> None:
         worker = CodexCliWorker(runner=fake_runner(timed_out=True, exit_code=-1))
         result = worker.run(make_request())

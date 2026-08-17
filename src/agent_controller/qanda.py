@@ -163,8 +163,13 @@ class QandaFile:
         asked_worker: Worker | None = None,
         related_artifacts: list[str] | None = None,
         return_phase: Phase | None = None,
+        policy_scope: str | None = None,
     ) -> Question:
-        """質問を 1 件立てる。戻り先は質問した時点の位置を控えておく。"""
+        """質問を 1 件立てる。戻り先は質問した時点の位置を控えておく。
+
+        policy_scope は質問した Worker 自身の自己申告（指示書 018 §7）。
+        Controller が自由文から推測することはしない。
+        """
         started = time.perf_counter()
         record = Question(
             question_id=self.store.next_question_id(run.run_id),
@@ -179,6 +184,7 @@ class QandaFile:
             source_phase=run.phase,
             return_state=run.current_state,
             return_phase=return_phase if return_phase is not None else run.phase,
+            policy_scope=policy_scope,
         )
         self.store.save_question(record)
         self.refresh(run.run_id)
@@ -211,6 +217,8 @@ class QandaFile:
         affected_artifacts: list[str] | None = None,
         blocking_scope: str | None = None,
         recommended_human_action: str | None = None,
+        policy_rule: str | None = None,
+        policy_scope: str | None = None,
     ) -> Question:
         started = time.perf_counter()
         question.status = QuestionStatus.PROVISIONAL
@@ -222,10 +230,29 @@ class QandaFile:
         question.blocking_scope = blocking_scope
         question.recommended_human_action = recommended_human_action
         question.requires_human_confirmation_before_complete = True
+        question.policy_rule = policy_rule
+        question.policy_scope = policy_scope
         self.store.save_question(question)
         self.refresh(question.run_id)
         self._timing("provisional_saved_and_rendered", question.run_id, started)
         return question
+
+    def reusable_decision(
+        self, run_id: str, policy_scope: str, classification: str = "LOW_RISK_REVERSIBLE"
+    ) -> Question | None:
+        """指示書 018 §7: 同じ run 内で同じ policy_scope の既存決定を探す。
+
+        Worker が policy_scope を自己申告した質問だけが対象。自由文の類似度では
+        判定しない。ANSWERED / PROVISIONAL のどちらも再利用対象になる。
+        """
+        for item in self.store.questions(run_id):
+            if item.policy_scope != policy_scope:
+                continue
+            if item.classification != classification:
+                continue
+            if item.status in (QuestionStatus.PROVISIONAL, QuestionStatus.ANSWERED):
+                return item
+        return None
 
     def escalate_to_human(self, question: Question, reason: str | None = None) -> Question:
         """既存成果物から答えられない。推測で埋めずに人間へ渡す（§9）。"""
